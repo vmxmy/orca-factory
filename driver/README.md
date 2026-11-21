@@ -466,7 +466,7 @@ driver 按目录名识别自己建的工作区：`<票号>-executor` 与 `<票�
 | Done（部署通过、归属已释放）或 Canceled 的票 | 该票全部 executor、resolver 工作区 |
 | 其他票 | 被更新一轮取代的旧 resolver 工作区；最新一轮与 executor 保留 |
 
-满足下列任一条件的工作区保留，同一组原因只记一次 WARN：
+下表列出回收阻塞。已结束票只有 `dirty`、`unpushed` 中的一项或两项时，先备份再回收；存在其他阻塞时仍保留，不写备份。未结束票的保留规则不变，同一组原因只记一次 WARN：
 
 | 原因 | 判定 |
 |---|---|
@@ -474,6 +474,7 @@ driver 按目录名识别自己建的工作区：`<票号>-executor` 与 `<票�
 | `unpushed` | `git rev-list --count HEAD --not --remotes` 非 0；HEAD 等于该票合并交接的冻结 head 时视为已推送 |
 | `terminal-running` | 已结束票的工作区有任一终端不满足空闲条件；未结束票的旧 resolver 有任何终端 |
 | `terminal-unknown` | 终端列表读取失败 |
+| `backup-failed` | 备份目录不可写或任何备份步骤失败，不关闭终端、不删除工作区 |
 | `terminal-close-failed` | 关闭空闲终端失败，本轮保留工作区，下轮重试 |
 | `pinned` | Orca 置顶（Orca 没有锁定标记，置顶是用户唯一的标记） |
 | `git-status-failed` / `git-rev-list-failed` / `remove-failed` | 检查或删除失败 |
@@ -482,14 +483,33 @@ Done/Canceled 票的工作区没有上述其他阻塞、且其中全部终端都
 
 关闭调用 `orca terminal close --terminal <handle>`；`terminal_handle_stale` 视为已关闭，其他错误阻止本轮删除。每关闭一个终端记一条 INFO，包含工作区路径与终端 handle。随后调用 `orca worktree rm --worktree path:<路径>`，不带 `--force`；Orca 同时删除能证明已合并的本地分支。关闭或删除失败记 WARN，不影响票流转。
 
-存量回收用同一规则，先只读核对再执行：
+备份写入 `<状态根>/<仓库目录名>/workspace-backups/<工作区目录名>-<随机后缀>/`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。成功日志 `workspace backed up` 的 `backup` 字段给出完整目录。每次尝试使用新目录，失败可能留下不完整文件；Driver 不清理备份。
+
+完整备份包含 `workspace.bundle`（HEAD 及其提交历史）、`tracked.patch`（相对 HEAD 的已跟踪文件最终修改，支持二进制）和 `untracked.tar`（未跟踪且未忽略的文件）。忽略文件如 `.omc/` 不备份。补丁恢复文件内容，不单独恢复暂存区状态。三份文件全部写完后才关闭空闲终端并调用删除；备份完成后进程退出、尚未删除工作区时，下轮会重新备份。
+
+在新的克隆里恢复，先把 `backup` 设置为成功日志中的绝对目录，把 `repo_url` 设置为原仓库地址：
+
+```sh
+git clone "$repo_url" restored
+cd restored
+git fetch "$backup/workspace.bundle" HEAD
+git checkout --detach FETCH_HEAD
+if [ -s "$backup/tracked.patch" ]; then
+    git apply --binary "$backup/tracked.patch"
+fi
+tar -xf "$backup/untracked.tar"
+```
+
+任一命令非零退出表示还原未完成，应停止后续步骤并检查输出。
+
+存量回收用同一规则，先只读核对再执行。`--dry-run` 对待备份的工作区输出 `would-backup-and-remove`，不创建备份、不关闭终端、不删除工作区：
 
 ```sh
 orca-factory-driver prune-workspaces --dry-run
 orca-factory-driver prune-workspaces
 ```
 
-`--dry-run` 使用同一套空闲与保留判定，每行输出 `would-remove` 或 `keep … blocks=<原因>`，不关闭终端或删除工作区；执行时输出 `removed` 或 `keep`。命令只处理 `projects` 判为可接管的项目，不需要停止 serve。旧的 `prune-worktrees` 只处理已退役的定时 coordinator 前缀，不覆盖这些工作区。
+`--dry-run` 使用同一套空闲与保留判定，每行输出 `would-remove`、`would-backup-and-remove` 或 `keep … blocks=<原因>`，不写备份、不关闭终端或删除工作区；执行时输出 `removed` 或 `keep`。命令只处理 `projects` 判为可接管的项目，不需要停止 serve。旧的 `prune-worktrees` 只处理已退役的定时 coordinator 前缀，不覆盖这些工作区。
 
 ## 隔离 CI runner 检测
 

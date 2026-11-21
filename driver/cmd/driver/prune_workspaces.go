@@ -71,7 +71,9 @@ func pruneWorkspaces(ctx context.Context, runtime *scheduler.Runtime, repos []co
 		if dry {
 			action = "would-remove"
 		}
-		if len(v.Blocks) != 0 {
+		if dry && v.Backup {
+			action = "would-backup-and-remove"
+		} else if len(v.Blocks) != 0 {
 			action, blocks = "keep", " blocks="+strings.Join(v.Blocks, ",")
 		}
 		if _, err := fmt.Fprintf(out, "%s %s ticket=%s reason=%q%s\n", action, v.Path, v.Ticket, v.Reason, blocks); err != nil {

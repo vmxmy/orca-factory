@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -43,6 +44,8 @@ type Verdict struct {
 	Workspace
 	Reason string
 	Blocks []string
+	// Backup marks closed workspaces whose only blocks can be backed up.
+	Backup bool
 }
 
 // closedTicket is a ticket the ledger reports Done or Canceled. Head is its
@@ -99,9 +102,9 @@ func reclaimTargets(workspaces []Workspace, closed map[string]closedTicket) []Ve
 
 // ReclaimWorkspaces removes the reclaimable Orca workspaces of every tracked
 // repository, using the ticket states of the last Snapshot. A workspace with
-// uncommitted changes, commits on no remote, a live terminal or an Orca pin is
-// kept and warned about once. dryRun only decides. A failed list or removal
-// never affects ticket flow.
+// a live terminal or an Orca pin is kept and warned about once. Closed tickets
+// blocked only by local changes are backed up before removal. dryRun only
+// decides. A failed list or removal never affects ticket flow.
 func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *slog.Logger) ([]Verdict, error) {
 	repos := make([]string, 0, len(r.Repositories))
 	for repo := range r.Repositories {
@@ -142,6 +145,22 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 			}
 			closed, canClose := r.closed[repo][v.Ticket]
 			v.Blocks = r.reclaimBlocks(ctx, v.Workspace, pinned[v.Path], workspaceTerminals, terminalErr, closed.Head, canClose)
+			v.Backup = canClose && len(v.Blocks) > 0
+			for _, block := range v.Blocks {
+				if block != "dirty" && block != "unpushed" {
+					v.Backup = false
+				}
+			}
+			if v.Backup && !dryRun {
+				backup, err := r.backupWorkspace(ctx, repo, v.Workspace)
+				if err != nil {
+					v.Blocks = []string{"backup-failed"}
+					logger.Warn("workspace backup failed", "path", v.Path, "error", err)
+				} else {
+					v.Blocks = nil
+					logger.Info("workspace backed up", "path", v.Path, "backup", backup)
+				}
+			}
 			if len(v.Blocks) == 0 && !dryRun {
 				for _, terminal := range workspaceTerminals {
 					if err := r.Workspaces.TerminalClose(ctx, terminal.Handle); err != nil {
@@ -223,4 +242,45 @@ func (r *Runtime) warnKept(logger *slog.Logger, v Verdict) {
 	}
 	r.reclaimWarned[v.Path] = blocks
 	logger.Warn("workspace kept", "path", v.Path, "reason", v.Reason, "blocks", blocks)
+}
+
+// backupWorkspace completes all artifacts outside the workspace before removal.
+// Each attempt gets its own directory, so a retry cannot overwrite a backup.
+func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace) (string, error) {
+	root := r.StateRoot
+	if root == "" {
+		root = stateRoot()
+	}
+	if root == "" {
+		return "", errors.New("cannot resolve backup state root")
+	}
+	parent := filepath.Join(root, filepath.Base(repo), "workspace-backups")
+	if err := os.MkdirAll(parent, 0700); err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(parent, filepath.Base(w.Path)+"-")
+	if err != nil {
+		return "", err
+	}
+	if _, err := r.command(ctx, w.Path, "git", "bundle", "create", filepath.Join(dir, "workspace.bundle"), "HEAD"); err != nil {
+		return "", err
+	}
+	if _, err := r.command(ctx, w.Path, "git", "diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--output="+filepath.Join(dir, "tracked.patch"), "HEAD", "--"); err != nil {
+		return "", err
+	}
+	files, err := r.command(ctx, w.Path, "git", "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return "", err
+	}
+	list := filepath.Join(dir, "untracked.list")
+	if err := os.WriteFile(list, files, 0600); err != nil {
+		return "", err
+	}
+	if _, err := r.command(ctx, w.Path, "tar", "-cf", filepath.Join(dir, "untracked.tar"), "--null", "-T", list); err != nil {
+		return "", err
+	}
+	if err := os.Remove(list); err != nil {
+		return "", err
+	}
+	return dir, nil
 }

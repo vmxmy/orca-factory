@@ -271,6 +271,11 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 `terminal list` 的 `lastOutputAt: null` 表示输出时间未知。驱动器保留该终端，但同一工作区存在未知输出时间时，不依据终端输出执行空闲催促或判定停滞；字段缺失或类型错误仍拒绝解析。真实录制 `orca-terminal-null-output.json` 保留混合时间戳及全部行数，脱敏方式和原始摘要见同名 provenance；`orca.TestRecordedTerminalUnknownOutput` 通过公开客户端重放。回归覆盖还包括 `orca.TestIdleDetectionTerminalList`、`orca.TestTerminalForWorktreeUnknownOutput` 和 `executor.TestIdleUnknownOutputDoesNotNudge`。仅 Done/Canceled 票的工作区无其他阻塞且全部终端均无 agent 身份、输出时间已知并静默至少 1 小时时，回收才会先关闭终端；未结束票的旧 resolver 有终端就保留，停滞判定规则不变。`scheduler.TestReclaimClosesIdleTerminals`、`scheduler.TestReclaimKeepsBlockedTerminals`、`scheduler.TestReclaimTerminalCloseFailure` 覆盖关闭顺序、静默边界、阻塞与重试。
 
+已进入回收候选的 Done/Canceled 工作区，其阻塞为 `dirty`、`unpushed` 的非空子集时，先写备份，全部成功后才执行原有关闭终端与删除步骤。备份失败返回 `backup-failed` 并保留工作区，不关闭终端；含其他阻塞以及未结束票的旧处置轮仍保留，不写备份。`unpushed`、置顶、终端空闲和候选归属判定保持不变。
+
+备份目录为 `<状态根>/<仓库目录名>/workspace-backups/<工作区目录名>-<随机后缀>/`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。目录中 `workspace.bundle` 保存 HEAD 历史，`tracked.patch` 保存相对 HEAD 的已跟踪内容差异，`untracked.tar` 保存未跟踪且未忽略的文件。忽略文件不备份，不恢复暂存区边界，不自动清理备份；失败可留下不完整目录，重试创建新目录。新克隆依次 `git fetch <备份目录>/workspace.bundle HEAD`、`git checkout --detach FETCH_HEAD`、对非空补丁 `git apply --binary <备份目录>/tracked.patch`、`tar -xf <备份目录>/untracked.tar` 恢复内容，具体步骤见 [工作区回收](README.md#工作区回收)。`prune-workspaces --dry-run` 输出 `would-backup-and-remove`，没有写入或删除副作用。`scheduler.TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace` 验证删除前备份完整、三类内容可逐字节还原、不可写目录保留、未结束票保留和 dry-run 不写备份；`TestPruneWorkspacesDryRunBacksUpClosedWorkspace` 验证 CLI 输出。
+
+
 ## 飞书群通知（OF-9）
 
 - `feishu.Client.SendText` 使用应用 tenant token，POST `/open-apis/im/v1/messages?receive_id_type=chat_id`；`content` 是包含 `text` 的 JSON 字符串。单次调用不重试。`TestFeishuNotifyRecorded` 回放 PR #418 的 `bot-message-send.json`、`bot-message-invalid-chat.json`（230001）、`bot-message-bot-not-in-chat.json`（230002），精确比较请求。缺权限测试复用 `bot-scope-denied.json` 的 99991672 与 permission violations 形态；该录制原请求是 Base 写入，不声称录制过消息接口缺权限。
