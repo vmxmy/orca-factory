@@ -273,9 +273,9 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 已进入回收候选的 Done/Canceled 工作区，其阻塞为 `dirty`、`unpushed` 的非空子集时，Driver 先关闭全部空闲终端，再写备份。关闭失败记为 `terminal-close-failed`，本轮保留工作区并跳过备份。`terminal_handle_stale` 视为已关闭。含其他阻塞的工作区及未结束票的旧处置轮继续按原规则保留。
 
-Driver 在本轮回收前列出全部受管仓库的 driver 工作区。任一仓库的工作区列表读取失败、解析符号链接后备份目录等于或位于其中任一工作区内、待备份工作区含已初始化的子模块，或备份写入失败，均记为 `backup-failed`。此时终端已关闭，工作区保留。未初始化的 gitlink 允许备份。
+Driver 在本轮回收前列出全部受管仓库的 driver 工作区。解析符号链接后，Driver 按设备号与 inode 判断备份目录或其任一上级目录是否与某个工作区是同一目录。目录匹配、任一仓库的工作区列表读取失败、待备份工作区含已初始化的子模块，或备份写入失败，均记为 `backup-failed`。此时终端已关闭，工作区保留。未初始化 gitlink 目录中的文件随 `worktree.tar` 备份。
 
-备份目录为 `<状态根>/<仓库目录名>/workspace-backups/<工作区目录名>-<随机后缀>/`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。`workspace.bundle` 保存 HEAD 历史。`tracked.patch` 保存相对 HEAD 的二进制和文本差异，生成时指定 `--no-color --unified=3`。`worktree.tar` 保存工作区中所有仍存在的已跟踪文件和未跟踪且未忽略文件的原始字节。备份不记录暂存区边界。写入失败可能留下不完整目录，重试使用新目录，Driver 不自动清理备份。
+备份目录为 `<状态根>/<仓库目录名>/workspace-backups/<工作区目录名>-<随机后缀>/`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。`workspace.bundle` 保存 HEAD 历史。`tracked.patch` 保存相对 HEAD 的二进制和文本差异，生成时指定 `--no-color --unified=3`。`worktree.tar` 保存工作区中仍存在的已跟踪文件、未跟踪且未忽略的文件，以及未初始化 gitlink 目录中的全部文件，均保留原始字节。备份不记录暂存区边界。写入失败可能留下不完整目录，重试使用新目录，Driver 不自动清理备份。
 
 三份备份文件写完后，Driver 依次运行 `git reset --hard --quiet HEAD`、`git clean -ffd --quiet`，再调用不带 `--force` 的 `orca worktree rm`。任一清理命令失败都记为 `remove-failed`，保留备份和工作区。
 

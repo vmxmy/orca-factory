@@ -276,23 +276,8 @@ func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace,
 	if err != nil {
 		return "", err
 	}
-	for _, list := range listings {
-		if list.err != nil {
-			return "", list.err
-		}
-		for _, workspace := range list.workspaces {
-			path, err := physicalBackupPath(workspace.Path)
-			if err != nil {
-				return "", err
-			}
-			rel, err := filepath.Rel(path, parent)
-			if err != nil {
-				return "", err
-			}
-			if filepath.IsLocal(rel) {
-				return "", fmt.Errorf("backup directory is inside workspace %s", path)
-			}
-		}
+	if err := checkBackupDirectory(parent, listings); err != nil {
+		return "", err
 	}
 	files, err := r.workspaceArchiveFiles(ctx, w.Path)
 	if err != nil {
@@ -322,6 +307,43 @@ func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace,
 		return "", err
 	}
 	return dir, nil
+}
+
+func checkBackupDirectory(parent string, listings []repositoryWorkspaces) error {
+	var ancestors []os.FileInfo
+	for {
+		info, err := os.Stat(parent)
+		if err == nil {
+			ancestors = append(ancestors, info)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			break
+		}
+		parent = next
+	}
+	for _, list := range listings {
+		if list.err != nil {
+			return list.err
+		}
+		for _, workspace := range list.workspaces {
+			info, err := os.Stat(workspace.Path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			for _, ancestor := range ancestors {
+				if os.SameFile(ancestor, info) {
+					return fmt.Errorf("backup directory is inside workspace %s", workspace.Path)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) workspaceArchiveFiles(ctx context.Context, root string) ([]byte, error) {
@@ -377,7 +399,8 @@ func worktreeFilePresent(root, path string) (bool, error) {
 	}
 	_, err := os.Lstat(filepath.Join(root, ".git"))
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		entries, err := os.ReadDir(root)
+		return len(entries) > 0, err
 	}
 	if err != nil {
 		return false, err

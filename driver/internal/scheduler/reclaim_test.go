@@ -325,9 +325,10 @@ func TestReclaimWorkspaces(t *testing.T) {
 }
 
 func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
+	const submoduleNotes = "notes\x00inside gitlink\n"
 	for _, scenario := range []string{
-		"restore", "clean-submodule", "populated-submodule", "open-ticket", "dry-run",
-		"state-inside", "state-inside-peer", "state-inside-other-repo", "other-repo-list-failed",
+		"restore", "clean-submodule", "submodule-local-file", "populated-submodule", "open-ticket", "dry-run",
+		"state-inside", "state-inside-peer", "state-inside-peer-case", "state-inside-other-repo", "other-repo-list-failed",
 		"unwritable", "reset-failed", "terminal-close-failed",
 	} {
 		t.Run(scenario, func(t *testing.T) {
@@ -367,7 +368,7 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 			write(filepath.Join(repo, ".gitignore"), ".omc/\n")
 			git(repo, "add", ".")
 			git(repo, "commit", "-m", "base")
-			if scenario == "clean-submodule" || scenario == "populated-submodule" {
+			if scenario == "clean-submodule" || scenario == "submodule-local-file" || scenario == "populated-submodule" {
 				base := git(repo, "rev-parse", "HEAD")
 				git(repo, "update-index", "--add", "--cacheinfo", "160000,"+base+",sub")
 				git(repo, "commit", "-m", "track submodule")
@@ -419,11 +420,16 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 				write(state, "a regular file prevents creating the backup directory")
 			case "populated-submodule":
 				git(filepath.Join(workspace, "sub"), "init")
+			case "submodule-local-file":
+				if err := os.MkdirAll(filepath.Join(workspace, "sub"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				write(filepath.Join(workspace, "sub", "notes"), submoduleNotes)
 			case "state-inside":
 				state = filepath.Join(workspace, ".omc", "state")
-			case "state-inside-peer", "state-inside-other-repo":
+			case "state-inside-peer", "state-inside-peer-case", "state-inside-other-repo":
 				peer := filepath.Join(root, "OF-643-executor")
-				if scenario == "state-inside-peer" {
+				if scenario != "state-inside-other-repo" {
 					git(repo, "worktree", "add", "--detach", peer)
 					fake.repoTrees[repo] = append(fake.repoTrees[repo], orca.Worktree{Path: peer})
 				} else {
@@ -432,7 +438,18 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 					}
 					fake.repoTrees[repoB] = []orca.Worktree{{Path: peer}}
 				}
-				if err := os.Symlink(peer, state); err != nil {
+				if scenario == "state-inside-peer-case" {
+					peerInfo, err := os.Stat(peer)
+					if err != nil {
+						t.Fatal(err)
+					}
+					alias := filepath.Join(root, "of-643-executor")
+					aliasInfo, err := os.Stat(alias)
+					if err != nil || !os.SameFile(peerInfo, aliasInfo) {
+						t.Skip("case-sensitive filesystem")
+					}
+					state = filepath.Join(alias, ".omc", "state")
+				} else if err := os.Symlink(peer, state); err != nil {
 					t.Fatal(err)
 				}
 			case "other-repo-list-failed":
@@ -493,7 +510,7 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 					}
 				}
 			}
-			if scenario == "restore" || scenario == "clean-submodule" {
+			if scenario == "restore" || scenario == "clean-submodule" || scenario == "submodule-local-file" {
 				if len(verdicts[0].Blocks) != 0 || !slices.Equal(fake.actions, []string{"close idle", "backup", "remove " + workspace}) {
 					t.Fatalf("verdicts=%+v actions=%v", verdicts, fake.actions)
 				}
@@ -511,6 +528,12 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 					t.Fatalf("restore tar: %v %s", err, out)
 				}
 				checkFiles(restored)
+				if scenario == "submodule-local-file" {
+					got, err := os.ReadFile(filepath.Join(restored, "sub", "notes"))
+					if err != nil || string(got) != submoduleNotes {
+						t.Fatalf("restored sub/notes = %q, %v; want %q", got, err, submoduleNotes)
+					}
+				}
 				if scenario == "restore" {
 					if dest, err := os.Readlink(filepath.Join(restored, "old")); err != nil || dest != "." {
 						t.Fatalf("restored link = %q, %v", dest, err)

@@ -484,13 +484,13 @@ Done/Canceled 票的工作区没有上述其他阻塞、且其中全部终端都
 
 Driver 用 `orca terminal close --terminal <handle>` 关闭终端。`terminal_handle_stale` 视为已关闭，其他错误会阻止本轮备份和删除。每关闭一个终端记一条 INFO，包含工作区路径与终端 handle。无需备份的工作区在关闭终端后直接调用 `orca worktree rm --worktree path:<路径>`。Orca 同时删除能证明已合并的本地分支。关闭或删除失败记 WARN，不影响票流转。
 
-备份写入 `<状态根>/<仓库目录名>/workspace-backups/<工作区目录名>-<随机后缀>/`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。Driver 解析符号链接后核对备份位置。未初始化的 gitlink 允许备份。成功日志 `workspace backed up` 的 `backup` 字段给出完整目录。每次尝试使用新目录，写入失败可能留下不完整文件。Driver 不清理备份。
+备份写入 `<状态根>/<仓库目录名>/workspace-backups/<工作区目录名>-<随机后缀>/`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。Driver 解析符号链接后，按设备号与 inode 逐级比较备份目录及其上级目录与各工作区目录，大小写不同的拼写也算同一目录。未初始化 gitlink 目录中的文件整体写入 `worktree.tar`。成功日志 `workspace backed up` 的 `backup` 字段给出完整目录。每次尝试使用新目录，写入失败可能留下不完整文件。Driver 不清理备份。
 
 备份包含三份文件。
 
 - `workspace.bundle` 保存 HEAD 及其提交历史。
 - `tracked.patch` 保存相对 HEAD 的修改和删除，支持二进制。Driver 用 `git diff --no-color --unified=3` 生成无颜色、带三行上下文的补丁。
-- `worktree.tar` 保存工作区中所有仍存在的已跟踪文件和未跟踪且未忽略文件的原始字节。恢复时最后解开归档，保留工作区里的换行符。备份不包含 `.omc/` 等忽略文件，也不记录哪些修改已暂存。
+- `worktree.tar` 保存工作区中仍存在的已跟踪文件、未跟踪且未忽略的文件，以及未初始化 gitlink 目录中的全部文件，均保留原始字节。恢复时最后解开归档，保留工作区里的换行符。gitlink 目录以外的未跟踪文件遵循 Git 的忽略规则，例如工作区根目录的 `.omc/`。备份不记录哪些修改已暂存。
 
 三份文件写完后，Driver 在工作区依次执行 `git reset --hard --quiet HEAD` 和 `git clean -ffd --quiet`。清理成功后才调用不带 `--force` 的 `orca worktree rm`。清理失败时保留工作区和备份。如果进程在删除前退出，下轮回收可能再写一份备份。
 
