@@ -272,13 +272,17 @@ func TestResumeCompleteBranch(t *testing.T) {
 		t.Fatalf("result=%+v err=%v starts=%d gates=%d", result, err, len(o.starts), tools.gateCalls)
 	}
 }
-func TestResumeExistingPRWaitsWithoutFrozenEvidence(t *testing.T) {
-	e, o, tools, _, _, ticket := recoveryFixture(t)
+func TestResumeExistingPRHandsToResolverWithoutFrozenEvidence(t *testing.T) {
+	e, o, tools, _, l, ticket := recoveryFixture(t)
 	e.GitHub.(*fakeGitHub).existing = &github.PullRequest{Number: 7, HTMLURL: "https://example.test/pr/7"}
 	result, err := e.Start(context.Background(), ticket)
-	if err == nil || result.State.Owner == machine.OwnerMerge || len(o.starts) != 0 || tools.gateCalls != 0 || tools.reviewCalls != 0 {
+	if err != nil || result.State.Owner != machine.OwnerResolver || len(o.starts) != 0 || tools.gateCalls != 0 || tools.reviewCalls != 0 {
 		t.Fatalf("result=%+v err=%v starts=%d gate=%d review=%d", result, err, len(o.starts), tools.gateCalls, tools.reviewCalls)
 	}
+	if len(l.comments) != 1 || !strings.HasPrefix(l.comments[0], "Agent处置: existing PR has no frozen handoff\n") || !strings.Contains(l.comments[0], "PR #7 head=new-sha") {
+		t.Fatalf("expected one resolver event with PR evidence: %v", l.comments)
+	}
+	assertBudgetHandoff(t, l)
 }
 func TestCorrectionCommands(t *testing.T) {
 	repo := t.TempDir()
