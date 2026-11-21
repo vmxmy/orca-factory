@@ -228,6 +228,12 @@ func TestRecordedMountInfoBindSubdir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if bind := (mount{device: "0:27", root: "/snapd/ns", point: "/run/snapd/ns"}); !slices.Contains(mounts, bind) {
+		t.Fatalf("recorded bind mount %+v missing from parsed table", bind)
+	}
+	if device, source := mountSource(mounts, "/run/snapd/ns/auto-cpufreq.mnt"); device != "0:5" || source != "mnt:[4026532949]" {
+		t.Fatalf("mount over the bind mount resolved to device %q source %q", device, source)
+	}
 	backupDevice, backupSource := mountSource(mounts, "/run/snapd/ns/x")
 	if backupDevice != "0:27" || backupSource != "/snapd/ns/x" {
 		t.Fatalf("bind mount path resolved to device %q source %q", backupDevice, backupSource)
