@@ -70,6 +70,11 @@ func resolveTicket(args []string) int {
 		if err != nil {
 			return 1, err
 		}
+		defer func() {
+			if err := heartbeat.Finish(); err != nil {
+				logger.Error("resolver heartbeat finish", "err", err)
+			}
+		}()
 		runtime, err := scheduler.NewRuntime(ctx, cfg, repos)
 		if err != nil {
 			return 1, err

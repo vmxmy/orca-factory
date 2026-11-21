@@ -25,6 +25,7 @@ type Beat struct {
 	Run      string    `json:"run,omitempty"`
 	Terminal string    `json:"terminal,omitempty"`
 	At       time.Time `json:"at"`
+	Exited   bool      `json:"exited,omitempty"`
 }
 
 // Liveness is the scheduler's verdict on a heartbeat.
@@ -94,12 +95,14 @@ func PIDAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// Judge combines heartbeat age and pid existence. A fresh beat with a missing
-// pid, or a stale beat with a live pid, is contradictory evidence: uncertain.
+// Judge combines heartbeat age, the exit marker and pid existence. An exit
+// marker proves death only after the pid disappears.
 func (b Beat) Judge(now time.Time, timeout time.Duration, alive func(int) bool) Liveness {
 	fresh := now.Sub(b.At) <= timeout
 	exists := alive(b.PID)
 	switch {
+	case b.Exited && !exists:
+		return LivenessDead
 	case fresh && exists:
 		return LivenessAlive
 	case !fresh && !exists:
@@ -116,15 +119,17 @@ type Heartbeat struct {
 	now      func() time.Time
 	mu       sync.Mutex
 	run      string
+	exited   bool
+	done     chan struct{}
 }
 
 // StartHeartbeat writes the first beat before returning, then keeps beating
-// until ctx ends. A nil Heartbeat is a valid no-op receiver.
+// until ctx ends or Finish is called. A nil Heartbeat is a valid no-op receiver.
 func StartHeartbeat(ctx context.Context, path, terminal string, interval time.Duration, now func() time.Time) (*Heartbeat, error) {
 	if now == nil {
 		now = time.Now
 	}
-	h := &Heartbeat{path: path, terminal: terminal, now: now}
+	h := &Heartbeat{path: path, terminal: terminal, now: now, done: make(chan struct{})}
 	if err := h.beat(); err != nil {
 		return nil, err
 	}
@@ -134,6 +139,8 @@ func StartHeartbeat(ctx context.Context, path, terminal string, interval time.Du
 		for {
 			select {
 			case <-ctx.Done():
+				return
+			case <-h.done:
 				return
 			case <-ticker.C:
 				_ = h.beat()
@@ -149,6 +156,10 @@ func (h *Heartbeat) SetRun(run string) {
 		return
 	}
 	h.mu.Lock()
+	if h.exited {
+		h.mu.Unlock()
+		return
+	}
 	h.run = run
 	h.mu.Unlock()
 	_ = h.beat()
@@ -157,5 +168,28 @@ func (h *Heartbeat) SetRun(run string) {
 func (h *Heartbeat) beat() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return WriteBeat(h.path, Beat{PID: os.Getpid(), Run: h.run, Terminal: h.terminal, At: h.now().UTC()})
+	if h.exited {
+		return nil
+	}
+	return h.writeLocked()
+}
+
+// Finish stops updates and attempts to write the exit marker once, even if ctx
+// is canceled. A failed write leaves the scheduler using its previous evidence.
+func (h *Heartbeat) Finish() error {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.exited {
+		return nil
+	}
+	h.exited = true
+	close(h.done)
+	return h.writeLocked()
+}
+
+func (h *Heartbeat) writeLocked() error {
+	return WriteBeat(h.path, Beat{PID: os.Getpid(), Run: h.run, Terminal: h.terminal, At: h.now().UTC(), Exited: h.exited})
 }

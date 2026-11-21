@@ -6,6 +6,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,42 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
+
+func TestExitedBeatIsDeadBeforeTimeout(t *testing.T) {
+	now := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	for _, owner := range []machine.Owner{machine.OwnerExecutor, machine.OwnerResolver} {
+		for _, tc := range []struct {
+			name     string
+			exited   string
+			pidAlive bool
+			want     orca.Liveness
+		}{
+			{"exited and pid gone", `,"exited":true`, false, orca.LivenessDead},
+			{"exited and pid exists", `,"exited":true`, true, orca.LivenessAlive},
+			{"legacy and pid gone", "", false, orca.LivenessUncertain},
+		} {
+			t.Run(string(owner)+"/"+tc.name, func(t *testing.T) {
+				r := &Runtime{StateRoot: t.TempDir(), Now: func() time.Time { return now }, PIDAlive: func(int) bool { return tc.pidAlive }}
+				ticket := Ticket{Identifier: "OF-626", Repo: "/repo", Owner: owner, Terminal: "term_exec"}
+				path, err := r.beatPath(ticket)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				raw := `{"pid":7,"terminal":"term_exec","at":"2026-11-20T23:59:00Z"` + tc.exited + `}`
+				if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+					t.Fatal(err)
+				}
+				got, err := r.Liveness(context.Background(), ticket)
+				if err != nil || got != tc.want {
+					t.Fatalf("liveness=%q err=%v, want %q", got, err, tc.want)
+				}
+			})
+		}
+	}
+}
 
 type livenessBackend struct {
 	fakeBackend
