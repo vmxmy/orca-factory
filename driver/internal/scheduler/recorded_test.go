@@ -219,3 +219,27 @@ func TestRecordedGitLsFilesGitlinkArchive(t *testing.T) {
 		}
 	}
 }
+
+// The sample is this host's real /proc/self/mountinfo: /run is tmpfs 0:27 and
+// /run/snapd/ns is a bind mount of its subdirectory /snapd/ns, so paths under
+// the bind mount resolve to sources inside /run/snapd.
+func TestRecordedMountInfoBindSubdir(t *testing.T) {
+	mounts, err := parseMountInfo(string(recorded(t, "proc-self-mountinfo-bind-subdir.txt")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupDevice, backupSource := mountSource(mounts, "/run/snapd/ns/x")
+	if backupDevice != "0:27" || backupSource != "/snapd/ns/x" {
+		t.Fatalf("bind mount path resolved to device %q source %q", backupDevice, backupSource)
+	}
+	workspaceDevice, workspaceSource := mountSource(mounts, "/run/snapd")
+	if workspaceDevice != "0:27" || workspaceSource != "/snapd" {
+		t.Fatalf("/run/snapd resolved to device %q source %q", workspaceDevice, workspaceSource)
+	}
+	if !pathWithin(backupSource, workspaceSource) {
+		t.Fatalf("source %q must lie inside %q", backupSource, workspaceSource)
+	}
+	if device, source := mountSource(mounts, "/run/user/1000/doc/f"); device != "0:65" || source != "/f" {
+		t.Fatalf("nested mount resolved to device %q source %q", device, source)
+	}
+}
