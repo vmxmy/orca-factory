@@ -69,7 +69,8 @@ type Runtime struct {
 	closed        map[string]map[string]closedTicket
 	reclaimWarned map[string]string
 	// closedHistories holds only tickets classified closed in the last snapshot,
-	// keyed by repository and issue ID. Full sync always rereads their events.
+	// keyed by repository and issue ID. A full sync discards them at the start,
+	// and only successful snapshots rebuild them.
 	closedHistories map[string]map[string]closedHistory
 	// reviews runs the shadow cross reviews of escalated tickets.
 	reviews *crossReviews
@@ -279,6 +280,9 @@ func (e *SnapshotEvidenceError) Unwrap() error { return e.Err }
 
 func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
 	r.todayRuns = nil
+	if issues.IsFullSync(ctx) {
+		r.closedHistories = nil
+	}
 	groups := map[issues.Store][]config.Repository{}
 	order := []issues.Store{}
 	for _, repo := range repos {

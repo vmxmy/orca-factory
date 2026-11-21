@@ -114,7 +114,7 @@ AGENT_FEISHU_LIVE=1 AGENT_FEISHU_BASE=<测试 Base> AGENT_FEISHU_PROJECT=<仓库
 
 每轮巡检按客户端读事件：非全量轮先复用上一轮已归入 `closed`、且状态与更新时间均未变的票的完整历史，再把本项目其余的票分块（每块至多 10 张），每块用一次「票据」过滤分页读取，再按票分组。请求数约等于块数加上多出的事件页数。块取得小，是因为四个项目共用一张事件表，任何写入都会让进行中的分页读取从头重读；一次读取跨的页越少，被写入打断的机会越小。`scheduler inspection` 摘要的 `duration_ms` 是本轮总耗时，`phase_ms` 按阶段拆分：`projects`（项目发现与 Automation 核对）、`snapshot`（读全部账本）、`dispatch`、`merge`、`runners`、`claim`，各阶段相加约等于 `duration_ms`。`merge` 不含合并结果 gate 的运行时间；gate 退出时另写一条 INFO `merge gate finished`，带 `ticket`、`repository`、`queue_id`、`duration_ms`、`result`（`green`、`red`、`infrastructure`、`canceled`）与 `worktree_cleanup_failed`，基础设施失败另带 `err`。`ledger` 与 `events` 是本轮全部票据列表与事件读取的累计耗时，包括嵌在其他阶段里的快照。
 
-关闭票只有通过归属与处置证据解析并归入 `closed` 才能复用历史。Done 仍归合并通道或处置 Agent、存在部署屏障、证据解析失败的票照常读取；Canceled / Cancelled 沿用原有关闭分类。复用的历史仍参与当日运行统计与依赖判断。两次全量轮之间（最多 10 轮），已结清关闭票上新写的事件若未改变票的状态或更新时间，不会被读到；重新打开或更新时间变化时当轮重读，全量轮仍重读全部票。缓存只在当前调度器进程内，启动后的首轮和原有全量频率不变，`driver exec`、`driver resolve` 与 `status --fresh` 的启动读取不变。
+关闭票只有通过归属与处置证据解析并归入 `closed` 才能复用历史。Done 仍归合并通道或处置 Agent、存在部署屏障、证据解析失败的票照常读取；Canceled / Cancelled 沿用原有关闭分类。复用的历史仍参与当日运行统计与依赖判断。两次全量轮之间（最多 10 轮），已结清关闭票上新写的事件若未改变票的状态或更新时间，不会被读到；重新打开或更新时间变化时当轮重读，全量轮仍重读全部票。全量轮开始即丢弃记住的历史。如果某个客户端在全量轮读取失败，下一轮会重读该客户端的全部票。缓存只在当前调度器进程内，启动后的首轮和原有全量频率不变，`driver exec`、`driver resolve` 与 `status --fresh` 的启动读取不变。
 
 ## 内置定时协调与恢复
 

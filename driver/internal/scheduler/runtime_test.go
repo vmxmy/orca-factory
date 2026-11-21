@@ -520,6 +520,46 @@ func TestRuntimeSnapshotClosedHistoryInvalidation(t *testing.T) {
 	}
 }
 
+func TestRuntimeSnapshotFailedFullSyncDropsClosedHistories(t *testing.T) {
+	done := dependencyIssue("done", false)
+	done.State.Name = "Done"
+	lc := &batchIssues{
+		fakeIssues: fakeIssues{issues: []task.Issue{done}},
+		histories:  map[string][]task.Comment{"done": evidenceComments("阶段: 未领取\n归属: 无")},
+	}
+	r := &Runtime{Clients: map[string]issues.Store{"a": lc}}
+	repos := []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p", "AGENT_SCOPE_AVOID": "0"}}}
+	ctx := context.Background()
+	full := issues.WithFullSync(ctx)
+	if _, err := r.Snapshot(full, repos); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.closed["a"]["WAW-done"]; !ok {
+		t.Fatalf("first full sync did not classify WAW-done as closed: %v", r.closed["a"])
+	}
+
+	lc.histories["done"] = evidenceComments("阶段: 未领取\n归属: 无", "阶段: 排队合并\n归属: 合并通道")
+	lc.fail = "done"
+	if _, err := r.Snapshot(full, repos); err == nil {
+		t.Fatal("second full sync succeeded despite the failed event read")
+	}
+
+	lc.fail = ""
+	tickets, err := r.Snapshot(ctx, repos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lc.batches) != 3 || !reflect.DeepEqual(lc.batches[2], []string{"done"}) {
+		t.Errorf("expected third snapshot to reread done, got batches %v", lc.batches)
+	}
+	if len(tickets) != 1 || tickets[0].ID != "done" || tickets[0].Owner != machine.OwnerMerge {
+		t.Errorf("expected done with merge ownership, got %+v", tickets)
+	}
+	if _, ok := r.closed["a"]["WAW-done"]; ok {
+		t.Errorf("third snapshot still classifies WAW-done as closed: %v", r.closed["a"])
+	}
+}
+
 func TestRuntimeAutomationRequiresExplicitDisabled(t *testing.T) {
 	for _, tc := range []struct {
 		raw  string
