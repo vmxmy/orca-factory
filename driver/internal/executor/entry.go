@@ -307,13 +307,21 @@ func ownershipEvent(comment task.Comment, own string) (registered, foreign bool)
 
 // autoOwned rechecks, on the snapshot an approval decides on, that this executor
 // still owns the ticket and that the snapshot still grants a dispatched one auto.
+// A registration already seen and now missing proves no ownership.
 func (e *Executor) autoOwned(terminal string) func([]task.Comment) (bool, error) {
 	return func(comments []task.Comment) (bool, error) {
 		if e.Launch.Dispatched {
 			mode, pending, err := launchedMode(comments, terminal)
-			return mode.Mode == "auto" && !pending, err
+			if err == nil && pending {
+				err = errLaunchSuperseded
+			}
+			return err == nil && mode.Mode == "auto", err
 		}
-		return operatorOwned(comments, terminal)
+		held, err := operatorOwned(comments, terminal)
+		if err == nil && !held {
+			err = errLaunchSuperseded
+		}
+		return held, err
 	}
 }
 

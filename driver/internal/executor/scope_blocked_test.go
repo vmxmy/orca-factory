@@ -260,13 +260,14 @@ func TestAutoOwnedRechecksTheApprovalSnapshot(t *testing.T) {
 		ok, lost   bool
 	}{
 		{"operator registered", false, []string{claimed, registered}, true, false},
-		{"operator registration not visible", false, []string{claimed}, false, false},
+		{"operator registration not visible", false, []string{claimed}, false, true},
+		{"operator registration replaced", false, []string{"归属: 执行器 term=term_other run=run_two attempt=2"}, false, true},
 		{"operator handed over before its registration is visible", false, []string{claimed, human}, false, true},
 		{"operator handed to a human", false, []string{registered, human}, false, true},
 		{"operator superseded", false, []string{registered, claimed}, false, true},
 		{"operator restarted after release", false, []string{registered, "归属: 无", registered}, true, false},
 		{"dispatched", true, []string{claimed, modeReceipt("auto"), registered}, true, false},
-		{"dispatched registration not visible", true, []string{modeReceipt("auto")}, false, false},
+		{"dispatched registration not visible", true, []string{modeReceipt("auto")}, false, true},
 		{"dispatched registered twice", true, []string{modeReceipt("auto"), registered, registered}, false, false},
 		{"dispatched handed to a human", true, []string{modeReceipt("auto"), registered, human}, false, true},
 	} {
