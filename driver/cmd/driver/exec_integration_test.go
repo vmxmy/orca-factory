@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,33 +22,33 @@ func TestEligibleMode(t *testing.T) {
 	}
 	ledger := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": "host/one"}
 	project := func(path, mode string) projects.Project {
-		env := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": "host/one", "AGENT_LANE3_GLOBS": ".env* *secrets*"}
+		env := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": "host/one"}
 		if mode != "" {
 			env["AGENT_MODE"] = mode
 		}
 		return projects.Project{Path: path, Repository: config.Repository{Path: path, Env: env}}
 	}
-	rejected := project(root, "auto").Repository
-	moved := project(root, "auto")
+	rejected := project(root, "manual").Repository
+	moved := project(root, "manual")
 	moved.Repository.Env["AGENT_FEISHU_PROJECT"] = "host/two"
-	unnamed := project(root, "auto")
+	unnamed := project(root, "manual")
 	delete(unnamed.Repository.Env, "AGENT_FEISHU_PROJECT")
 	for _, tc := range []struct {
 		name   string
 		result projects.Result
 		want   string
 	}{
-		{"auto", projects.Result{Eligible: []projects.Project{project(other, "manual"), project(link, "auto")}}, "auto"},
-		{"manual", projects.Result{Eligible: []projects.Project{project(other, "auto"), project(root, "manual")}}, "manual"},
+		{"auto", projects.Result{Eligible: []projects.Project{project(other, "manual"), project(root, "auto")}}, ""},
+		{"manual", projects.Result{Eligible: []projects.Project{project(other, "auto"), project(link, "manual")}}, "manual"},
 		{"default", projects.Result{Eligible: []projects.Project{project(root, "")}}, "manual"},
 		{"rejected", projects.Result{Eligible: []projects.Project{project(other, "auto")}, Rejected: []projects.Rejection{{Path: root, Repository: &rejected}}}, ""},
 		{"another ledger project", projects.Result{Eligible: []projects.Project{moved}}, ""},
 		{"unnamed ledger project", projects.Result{Eligible: []projects.Project{unnamed}}, ""},
-		{"ambiguous", projects.Result{Eligible: []projects.Project{project(root, "auto"), project(link, "manual")}}, ""},
+		{"ambiguous", projects.Result{Eligible: []projects.Project{project(root, "manual"), project(link, "manual")}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mode, err := eligibleMode(tc.result, root, ledger)
-			if mode.Mode != tc.want || (err != nil) != (tc.want == "") || err == nil && !slices.Equal(mode.Lane3Globs, []string{".env*", "*secrets*"}) {
+			if mode.Mode != tc.want || (err != nil) != (tc.want == "") {
 				t.Fatalf("mode=%+v err=%v, want %q", mode, err, tc.want)
 			}
 		})
@@ -65,11 +64,11 @@ func TestSettledProfile(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if version, err := settledProfile(root, now); err == nil {
-		t.Fatalf("fresh profile settled as %q", version)
+	if err := settledProfile(root, now); err == nil {
+		t.Fatal("fresh profile accepted")
 	}
-	if version, err := settledProfile(root, now.Add(2*projectDiscoveryInterval+time.Minute)); err != nil || version == "" {
-		t.Fatalf("version=%q err=%v", version, err)
+	if err := settledProfile(root, now.Add(2*projectDiscoveryInterval+time.Minute)); err != nil {
+		t.Fatalf("settled profile rejected: %v", err)
 	}
 }
 

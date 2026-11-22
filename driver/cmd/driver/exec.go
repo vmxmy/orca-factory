@@ -58,10 +58,8 @@ func execTicket(args []string) int {
 	})
 }
 
-// repositoryMode is the AGENT_MODE the scheduler's next discovery would track for
-// the checkout at root, whose executor is bound to the Feishu ledger. A repository
-// discovery does not take over keeps a mode only the scheduler knows, so it stays
-// unverified here.
+// repositoryMode verifies manual mode for an operator-started Feishu executor.
+// Only a dispatched executor has the scheduler's lane 3 globs for auto approval.
 func repositoryMode(ctx context.Context, root string, ledger map[string]string) (executor.ScopeMode, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -73,30 +71,25 @@ func repositoryMode(ctx context.Context, root string, ledger map[string]string) 
 	if err != nil {
 		return executor.ScopeMode{}, err
 	}
-	version, err := settledProfile(root, time.Now())
-	if err != nil {
+	if err := settledProfile(root, time.Now()); err != nil {
 		return executor.ScopeMode{}, err
 	}
 	result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
 	if err != nil {
 		return executor.ScopeMode{}, err
 	}
-	mode, err := eligibleMode(result, root, ledger)
-	mode.Profile = version
-	return mode, err
+	return eligibleMode(result, root, ledger)
 }
 
-// settledProfile is the version of a profile the scheduler has certainly had a
-// discovery to load; until then it may still track an older one.
-func settledProfile(root string, now time.Time) (string, error) {
+func settledProfile(root string, now time.Time) error {
 	info, err := os.Stat(filepath.Join(root, "scripts", "agent-gates", "agent-graph.env"))
 	if err != nil {
-		return "", err
+		return err
 	}
 	if now.Sub(info.ModTime()) < 2*projectDiscoveryInterval {
-		return "", errors.New("repository profile written within the scheduler's discovery interval")
+		return errors.New("repository profile written within the scheduler's discovery interval")
 	}
-	return executor.ProfileVersion(root)
+	return nil
 }
 
 func eligibleMode(result projects.Result, root string, ledger map[string]string) (executor.ScopeMode, error) {
@@ -118,7 +111,11 @@ func eligibleMode(result projects.Result, root string, ledger map[string]string)
 			return executor.ScopeMode{}, fmt.Errorf("%s no longer names the bound ledger", key)
 		}
 	}
-	return executor.ScopeMode{Mode: cmp.Or(matches[0].Env["AGENT_MODE"], "manual"), Lane3Globs: strings.Fields(matches[0].Env["AGENT_LANE3_GLOBS"])}, nil
+	mode := cmp.Or(matches[0].Env["AGENT_MODE"], "manual")
+	if mode == "auto" {
+		return executor.ScopeMode{}, errors.New("auto scope approval for Feishu requires a scheduler dispatch")
+	}
+	return executor.ScopeMode{Mode: mode}, nil
 }
 
 var logComponent = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)

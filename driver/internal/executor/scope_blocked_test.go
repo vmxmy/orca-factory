@@ -293,13 +293,14 @@ func TestAutoApprovalReadsLane3AfterItsSnapshot(t *testing.T) {
 		tracked    bool
 		current    string
 		rewritten  bool
+		restored   bool
 		ok         bool
 	}{
-		{"unchanged", true, true, ".env*", false, true},
-		{"dispatched with a profile written since launch", true, true, ".env*", true, false},
-		{"dispatched without a profile version", true, false, ".env*", false, false},
-		{"operator with a profile written since its mode was read", false, true, ".env*", true, false},
-		{"operator outside the scheduler", false, false, "docs/*", true, true},
+		{name: "unchanged", dispatched: true, tracked: true, current: ".env*", ok: true},
+		{name: "dispatched with a profile written since launch", dispatched: true, tracked: true, current: ".env*", rewritten: true},
+		{name: "dispatched with the original profile restored", dispatched: true, tracked: true, restored: true},
+		{name: "dispatched without a profile version", dispatched: true, current: ".env*"},
+		{name: "operator outside the scheduler", current: "docs/*", rewritten: true, ok: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -308,15 +309,13 @@ func TestAutoApprovalReadsLane3AfterItsSnapshot(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			write := func(globs string, at time.Time) {
+			write := func(globs string) {
+				t.Helper()
 				if err := os.WriteFile(path, []byte(profile+"'"+globs+"'\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Chtimes(path, at, at); err != nil {
-					t.Fatal(err)
-				}
 			}
-			write(".env*", time.Unix(1700000000, 0))
+			write(".env*")
 			version, err := ProfileVersion(repo)
 			if err != nil {
 				t.Fatal(err)
@@ -330,8 +329,19 @@ func TestAutoApprovalReadsLane3AfterItsSnapshot(t *testing.T) {
 				mode.Profile = ""
 			}
 			approve := e.autoApproval(t.Context(), ticket, "term_exec", mode)
-			if tc.rewritten {
-				write(tc.current, time.Unix(1700000060, 0))
+			if tc.rewritten || tc.restored {
+				time.Sleep(20 * time.Millisecond)
+			}
+			if tc.restored {
+				if err := os.Rename(path, path+".original"); err != nil {
+					t.Fatal(err)
+				}
+				write("docs/*")
+				if err := os.Rename(path+".original", path); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.rewritten {
+				write(tc.current)
 			}
 			lane3, ok, err := approve([]task.Comment{{Source: task.SourceDriver, Body: modeReceipt("auto")}, {Source: task.SourceDriver, Body: "归属: 执行器 term=term_exec run=run_one attempt=1"}})
 			if err != nil || ok != tc.ok || ok && lane3 != "start/* tracked/* "+tc.current {

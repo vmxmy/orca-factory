@@ -8,11 +8,13 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
@@ -159,14 +161,28 @@ type ScopeMode struct {
 	Profile    string
 }
 
-// ProfileVersion changes whenever the repository profile at path is written, even
-// back to what it said before: the scheduler may still hold what it said between.
+// ProfileVersion uses inode change time so that moving the original profile
+// back into place invalidates a receipt even when its contents and mtime match.
 func ProfileVersion(path string) (string, error) {
 	info, err := os.Stat(filepath.Join(path, "scripts", "agent-gates", "agent-graph.env"))
 	if err != nil {
 		return "", err
 	}
-	return strconv.FormatInt(info.ModTime().UnixNano(), 10), nil
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "", errors.New("repository profile stat unavailable")
+	}
+	fields := reflect.ValueOf(stat).Elem()
+	for _, name := range []string{"Ctim", "Ctimespec"} {
+		field := fields.FieldByName(name)
+		if !field.IsValid() {
+			continue
+		}
+		if changed, ok := field.Interface().(syscall.Timespec); ok {
+			return strconv.FormatInt(changed.Nano(), 10), nil
+		}
+	}
+	return "", errors.New("repository profile change time unavailable")
 }
 
 // scopeMode is the AGENT_MODE that governs a worker's scope request, empty when
@@ -334,8 +350,8 @@ func (e *Executor) autoApproval(ctx context.Context, t Ticket, terminal string, 
 		var current []string
 		if e.CurrentLane3 != nil {
 			globs, version, err := e.CurrentLane3(ctx)
-			if err == nil && (e.Launch.Dispatched || mode.Profile != "") && version != mode.Profile {
-				err = errors.New("repository profile written since its mode was read")
+			if err == nil && e.Launch.Dispatched && version != mode.Profile {
+				err = errors.New("repository profile changed since dispatch")
 			}
 			if err != nil {
 				e.warn("%s lane 3 globs unverified: %s", t.Identifier, logErrorSummary(err))

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
@@ -61,9 +62,9 @@ func TestLaunchRecordsTrackedAgentMode(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(gates, "agent-graph.env"), []byte("AGENT_MODE="+tc.disk+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			written := time.Unix(1700000000, 42)
-			if err := os.Chtimes(filepath.Join(gates, "agent-graph.env"), written, written); err != nil {
-				t.Fatal(err)
+			version, err := executor.ProfileVersion(repo)
+			if err != nil || version == "" || version == "unknown" {
+				t.Fatalf("profile version = %q, err = %v", version, err)
 			}
 			env := map[string]string{"AGENT_LANE3_GLOBS": ".env*  *secrets*"}
 			if tc.tracked != "" {
@@ -77,7 +78,7 @@ func TestLaunchRecordsTrackedAgentMode(t *testing.T) {
 			if err := r.Launch(t.Context(), before); err != nil {
 				t.Fatal(err)
 			}
-			if want := "派工档位: term=" + handle + " attempt=2 mode=" + tc.want + " profile=1700000000000000042\nlane3: .env* *secrets*"; len(store.comments) != 1 || store.comments[0] != want {
+			if want := "派工档位: term=" + handle + " attempt=2 mode=" + tc.want + " profile=" + version + "\nlane3: .env* *secrets*"; len(store.comments) != 1 || store.comments[0] != want {
 				t.Fatalf("receipt = %q, want %q", store.comments, want)
 			}
 			after := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, store.issueComments)
