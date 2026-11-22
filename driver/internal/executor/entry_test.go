@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
 func TestExecutorStateRoot(t *testing.T) {
@@ -297,22 +299,65 @@ func TestCorrectionTierFollowsChain(t *testing.T) {
 }
 
 func TestExecReadsRepositoryAgentMode(t *testing.T) {
-	for _, mode := range []string{"auto", "manual"} {
-		t.Run(mode, func(t *testing.T) {
+	const project = "github.com/vmxmy/orca-factory"
+	for _, tc := range []struct {
+		name, mode, gear, want string
+		keys                   []string
+		listErr, wantErr       bool
+	}{
+		{name: "repository auto", mode: "auto", want: "auto"},
+		{name: "repository manual", mode: "manual", want: "manual"},
+		{name: "missing repository mode ignores inherited auto", want: "manual"},
+		{name: "manual override", mode: "auto", gear: `{"mode":"manual"}`, keys: []string{project}, want: "manual"},
+		{name: "auto override", mode: "manual", gear: `{"mode":"auto"}`, keys: []string{project}, want: "auto"},
+		{name: "fork registered at path", mode: "manual", gear: `{"mode":"auto"}`, keys: []string{"github.com/fork/orca-factory"}, want: "manual"},
+		{name: "unregistered path", mode: "auto", gear: `{"mode":"manual"}`, want: "auto"},
+		{name: "ambiguous path", mode: "auto", gear: `{"mode":"auto"}`, keys: []string{project, "github.com/fork/orca-factory"}, want: "manual", wantErr: true},
+		{name: "list failed", mode: "auto", gear: `{"mode":"auto"}`, listErr: true, want: "manual", wantErr: true},
+		{name: "invalid gear entry", mode: "auto", gear: `"broken"`, keys: []string{project}, want: "manual", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
+			t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
 			t.Setenv("AGENT_MODE", "auto")
 			repo := t.TempDir()
 			path := filepath.Join(repo, "scripts/agent-gates/agent-graph.env")
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 				t.Fatal(err)
 			}
-			body := "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD=review\nAGENT_TIER_DEFAULT=codex::low\nAGENT_MODE=" + mode + "\n"
+			body := "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_PROJECT=" + project + "\n"
+			if tc.mode != "" {
+				body += "AGENT_MODE=" + tc.mode + "\n"
+			}
 			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 				t.Fatal(err)
 			}
-			e, _, err := repositoryExecutor(context.Background(), repo)
-			if err != nil || e.Config.Mode != mode {
-				t.Fatalf("mode=%q want=%q err=%v", e.Config.Mode, mode, err)
+			if tc.gear != "" {
+				gears := `{"` + project + `":` + tc.gear + `}`
+				if err := os.WriteFile(filepath.Join(os.Getenv("AGENT_DRIVER_STATE_ROOT"), "gear.json"), []byte(gears), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			list := func(context.Context) ([]orca.Repo, error) {
+				if tc.gear == "" {
+					t.Error("queried Orca without a gear override")
+				}
+				if tc.listErr {
+					return nil, errors.New("list unavailable")
+				}
+				alias := filepath.Join(t.TempDir(), "checkout")
+				if err := os.Symlink(repo, alias); err != nil {
+					t.Fatal(err)
+				}
+				registrations := []orca.Repo{{Path: t.TempDir(), CanonicalKey: project}}
+				for _, key := range tc.keys {
+					registrations = append(registrations, orca.Repo{Path: alias, CanonicalKey: key})
+				}
+				return registrations, nil
+			}
+			mode, err := agentMode(t.Context(), repo, list)
+			if mode != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("mode=%q err=%v, want mode=%q wantErr=%v", mode, err, tc.want, tc.wantErr)
 			}
 		})
 	}
