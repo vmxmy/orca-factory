@@ -105,6 +105,10 @@ func RunTicket(ctx context.Context, identifier string, merging bool, launch Laun
 // Feishu ledger proves who wrote an event, and the scheduler tracks no other
 // backend, whose mode therefore comes from the profile alone.
 func (e *Executor) bindMode(repo string, ledger map[string]string, verify func(context.Context, string, map[string]string) (ScopeMode, error)) {
+	e.CurrentLane3 = func(ctx context.Context) ([]string, error) {
+		current, _, err := repositoryExecutor(ctx, repo)
+		return current.Config.Lane3Globs, err
+	}
 	if ledger["AGENT_ISSUE_BACKEND"] == "feishu" {
 		e.LaunchReceipts = true
 		e.VerifyMode = func(ctx context.Context) (ScopeMode, error) { return verify(ctx, repo, ledger) }
@@ -155,7 +159,16 @@ type ScopeMode struct {
 // start verifies the repository's current mode.
 func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (ScopeMode, error) {
 	if e.Launch.Dispatched {
-		return e.awaitLaunchedMode(ctx, t, terminal)
+		mode, err := e.awaitLaunchedMode(ctx, t, terminal)
+		if err != nil || mode.Mode != "auto" || e.CurrentLane3 == nil {
+			return mode, err
+		}
+		current, err := e.CurrentLane3(ctx)
+		if err != nil {
+			e.warn("%s lane 3 globs unverified: %s", t.Identifier, logErrorSummary(err))
+			return ScopeMode{}, nil
+		}
+		return ScopeMode{Mode: mode.Mode, Lane3Globs: slices.Concat(mode.Lane3Globs, current)}, nil
 	}
 	if e.VerifyMode == nil {
 		return ScopeMode{}, nil
@@ -204,7 +217,7 @@ func (e *Executor) awaitLaunchedMode(ctx context.Context, t Ticket, terminal str
 }
 
 // launchedMode reads the mode the scheduler recorded for the terminal it created;
-// pending means no receipt yet. Only the first executor registered in that
+// pending means the receipt or the registration is not visible yet. Only the first executor registered in that
 // terminal is the dispatched one. Once the ticket changes hands or launches again
 // this executor no longer owns it and may not write it.
 func launchedMode(comments []task.Comment, terminal string) (mode ScopeMode, pending bool, err error) {
@@ -231,6 +244,9 @@ func launchedMode(comments []task.Comment, terminal string) (mode ScopeMode, pen
 		if !comment.CarriesProtocol() {
 			continue
 		}
+		if strings.HasPrefix(comment.Body, "转人: ") && receipts+registrations > 0 {
+			return ScopeMode{}, false, errLaunchSuperseded
+		}
 		for _, line := range strings.Split(comment.Body, "\n") {
 			ownership, ok := strings.CutPrefix(line, "归属: ")
 			if !ok {
@@ -244,10 +260,21 @@ func launchedMode(comments []task.Comment, terminal string) (mode ScopeMode, pen
 			}
 		}
 	}
-	if registrations != 1 || receipts > 1 {
+	if registrations > 1 || receipts > 1 {
 		return ScopeMode{}, false, nil
 	}
-	return mode, receipts == 0, nil
+	return mode, receipts == 0 || registrations == 0, nil
+}
+
+// launchOwned refuses a ledger snapshot in which a dispatched executor lost the ticket.
+func (e *Executor) launchOwned(terminal string) func([]task.Comment) error {
+	return func(comments []task.Comment) error {
+		if !e.Launch.Dispatched {
+			return nil
+		}
+		_, _, err := launchedMode(comments, terminal)
+		return err
+	}
 }
 
 var errLaunchSuperseded = errors.New("executor launch superseded; ticket no longer owned by this terminal")

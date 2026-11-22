@@ -251,6 +251,27 @@ func TestWorkerScopeBlockedAwaitsLaunchReceipt(t *testing.T) {
 	}
 }
 
+func TestScopeModeRereadsLane3ForADispatchedApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read func(context.Context) ([]string, error)
+		want ScopeMode
+	}{
+		{"current globs", func(context.Context) ([]string, error) { return []string{"docs/*"}, nil }, ScopeMode{Mode: "auto", Lane3Globs: []string{".env*", "docs/*"}}},
+		{"unreadable", func(context.Context) ([]string, error) { return nil, errors.New("profile unreadable") }, ScopeMode{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _, _, _, ledger, ticket := recoveryFixture(t)
+			e.Issues = &scopeIssues{budgetIssues: ledger}
+			e.Launch.Dispatched, e.LaunchReceipts, e.CurrentLane3 = true, true, tc.read
+			ledger.comments = []string{modeReceipt("auto") + "\nlane3: .env*", "归属: 执行器 term=term_exec run=run_one attempt=1"}
+			if mode, err := e.scopeMode(t.Context(), ticket, "term_exec"); err != nil || !reflect.DeepEqual(mode, tc.want) {
+				t.Fatalf("mode=%+v err=%v, want %+v", mode, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestBindModeFollowsTheBoundLedger(t *testing.T) {
 	const github = "AGENT_ISSUE_BACKEND=github\nAGENT_GH_REPO=owner/repo\n"
 	for _, tc := range []struct {
@@ -258,7 +279,7 @@ func TestBindModeFollowsTheBoundLedger(t *testing.T) {
 		dispatched            bool
 		want                  string
 	}{
-		{"feishu dispatched", "AGENT_ISSUE_BACKEND=feishu\nAGENT_GH_REPO=owner/repo\n", "", true, "auto"},
+		{"feishu dispatched", "AGENT_ISSUE_BACKEND=feishu\nAGENT_GH_REPO=owner/repo\n", "AGENT_ISSUE_BACKEND=feishu\nAGENT_GH_REPO=owner/repo\nAGENT_MODE=manual\n", true, "auto"},
 		{"feishu operator", "AGENT_ISSUE_BACKEND=feishu\nAGENT_GH_REPO=owner/repo\n", "", false, "discovered"},
 		{"github dispatched", github + "AGENT_MODE=auto\n", github + "AGENT_MODE=auto\n", true, ""},
 		{"github operator switched to manual", github + "AGENT_MODE=auto\n", github + "AGENT_MODE=manual\n", false, "manual"},
@@ -339,7 +360,8 @@ func TestLaunchedModeTrustsOnlyDriverReceipts(t *testing.T) {
 	}
 	const terminal = "term_fdf45555-3378-4ca8-99b1-6200fc3106fc"
 	const registration = "归属: 执行器 term=" + terminal + " run=run_c2d32709f17c attempt=1"
-	history := envelope.Data.Issue.Comments.Nodes
+	handedOver := envelope.Data.Issue.Comments.Nodes
+	history := slices.DeleteFunc(slices.Clone(handedOver), func(c task.Comment) bool { return strings.HasPrefix(c.Body, "转人: ") })
 	launched := time.Date(2026, 10, 5, 14, 8, 36, 0, time.UTC)
 	event := func(source, body string) task.Comment {
 		return task.Comment{Source: source, Body: body, CreatedAt: launched}
@@ -374,5 +396,11 @@ func TestLaunchedModeTrustsOnlyDriverReceipts(t *testing.T) {
 				t.Fatalf("mode=%+v err=%v, want %q superseded=%v", mode, err, tc.want, tc.superseded)
 			}
 		})
+	}
+	if _, _, err := launchedMode(append(slices.Clone(handedOver), event(task.SourceDriver, receipt)), terminal); !errors.Is(err, errLaunchSuperseded) {
+		t.Fatalf("recorded handoff to a human: err=%v", err)
+	}
+	if _, pending, err := launchedMode([]task.Comment{event(task.SourceDriver, receipt)}, terminal); !pending || err != nil {
+		t.Fatalf("unseen registration: pending=%v err=%v", pending, err)
 	}
 }

@@ -141,6 +141,19 @@ func TestRecordedAutoScopeApprovalCount(t *testing.T) {
 	}
 }
 
+func stillOwned([]task.Comment) error { return nil }
+
+func TestWorkerAutoScopeRefusesLostTicket(t *testing.T) {
+	h := scopedTicket(t, `{"action":"escalate","class":"scope-extension","reason":"scope","body":"proof","scope":["resolver.go"]}`)
+	lost := errors.New("ticket lost")
+	for _, path := range []string{"docs/system-manual.md", "core/gate.sh"} {
+		approved, err := AutoApproveWorkerScope(t.Context(), h.ledger, "OF-12", []string{path}, "", h.g.now(), func([]task.Comment) error { return lost })
+		if approved || !errors.Is(err, lost) || len(h.ledger.edits) != 0 {
+			t.Fatalf("path=%s approved=%v err=%v edits=%q", path, approved, err, h.ledger.edits)
+		}
+	}
+}
+
 func TestWorkerAutoScopeAuditPreservesEvidenceAndCountsAcrossStages(t *testing.T) {
 	h := scopedTicket(t, `{"action":"escalate","class":"scope-extension","reason":"scope","body":"proof","scope":["resolver.go"]}`)
 	ctx := context.Background()
@@ -149,7 +162,7 @@ func TestWorkerAutoScopeAuditPreservesEvidenceAndCountsAcrossStages(t *testing.T
 		t.Fatal(err)
 	}
 	for range 2 {
-		approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/system-manual.md"}, "", h.g.now())
+		approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/system-manual.md"}, "", h.g.now(), stillOwned)
 		if err != nil || !approved {
 			t.Fatalf("approved=%v err=%v", approved, err)
 		}
@@ -169,7 +182,7 @@ func TestWorkerAutoScopeAuditPreservesEvidenceAndCountsAcrossStages(t *testing.T
 	if !strings.Contains(events[len(events)-1], "第 2 次自动批准") {
 		t.Fatalf("worker approval not counted: %q", events)
 	}
-	approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/third.md"}, "", h.g.now())
+	approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/third.md"}, "", h.g.now(), stillOwned)
 	if err != nil || approved {
 		t.Fatalf("third approval: approved=%v err=%v", approved, err)
 	}
