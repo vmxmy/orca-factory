@@ -135,3 +135,29 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkerScopeBlockedAutoIgnoresWhitelist(t *testing.T) {
+	t.Setenv("AGENT_WORKER_AUTO_SCOPE", "1")
+	e, o, _, _, ledger, ticket := recoveryFixture(t)
+	e.Config.Mode = "auto"
+	ticket.Scope = "unit/change.go"
+	const face = "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
+	store := &scopeIssues{budgetIssues: ledger, description: face}
+	e.Issues = store
+	ledger.comments = []string{"扩SCOPE：auto 2026-11-21T00:00:00Z", "扩SCOPE：worker-auto 2026-11-21T01:00:00Z"}
+	o.failFirst = true
+	o.failBody = "SCOPE-BLOCKED: unit/change_test.go"
+	result, err := e.Execute(t.Context(), ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.description != face {
+		t.Errorf("ticket SCOPE changed: %q", store.description)
+	}
+	if result.State.Phase != machine.PhaseResolver || result.State.Corrections != 0 {
+		t.Errorf("phase = %s, corrections = %d", result.State.Phase, result.State.Corrections)
+	}
+	if strings.Contains(strings.Join(ledger.comments, "\n"), "自动扩 SCOPE：") {
+		t.Error("manual whitelist approved the request after two auto approvals")
+	}
+}

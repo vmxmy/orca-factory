@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -19,25 +20,28 @@ import (
 func init() { Register("exec", execTicket) }
 func execTicket(args []string) int {
 	repo := executorLogRepository()
-	id, merging, valid := "", false, false
-	switch {
-	case len(args) == 1 && logComponent.MatchString(args[0]):
-		id, valid = args[0], true
-	case len(args) == 2 && args[0] == "--merging" && logComponent.MatchString(args[1]):
-		id, merging, valid = args[1], true, true
+	rest := args
+	merging := len(rest) > 0 && rest[0] == "--merging"
+	if merging {
+		rest = rest[1:]
 	}
-	ticket := id
-	if !valid {
-		ticket = "unknown"
+	auto := len(rest) > 0 && rest[0] == "--auto"
+	if auto {
+		rest = rest[1:]
 	}
-	return loggedCommand("executor", filepath.Join(logStateRoot(), repo, ticket, "executor.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
-		logger = logger.With("repo", repo, "ticket", ticket)
-		if !valid {
-			return 2, fmt.Errorf("usage: driver exec [--merging] <票号>")
+	id := ""
+	if len(rest) == 1 && logComponent.MatchString(rest[0]) {
+		id = rest[0]
+	}
+	logTicket := cmp.Or(id, "unknown")
+	return loggedCommand("executor", filepath.Join(logStateRoot(), repo, logTicket, "executor.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
+		logger = logger.With("repo", repo, "ticket", logTicket)
+		if id == "" {
+			return 2, fmt.Errorf("usage: driver exec [--merging] [--auto] <票号>")
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging)
+		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging, auto)
 		if err != nil {
 			return 1, err
 		}

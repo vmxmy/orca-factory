@@ -152,7 +152,7 @@ orca-factory-driver status --json
 
 `manual` 模式且未启用安全文件开关时，worker 报告缺 SCOPE 外文件不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
 
-执行器启动时按调度器的规则取档位。仓库省略 `AGENT_MODE` 时默认为 `manual`，已登记仓库的有效 `gear.json` 覆盖优先。进程环境里的 `AGENT_MODE` 不参与取值。生效档位为 `auto` 时，执行器对有效的 `SCOPE-BLOCKED` 申请直接使用处置阶段的确定性规则，无需 `resolver-state` 记录，也无需启用 `AGENT_WORKER_AUTO_SCOPE`。申请每次最多 10 个仓库内字面路径，不得命中 lane 3 或控制文件；worker、普通处置和终审合计每票最多自动批准 2 次。票未取消、具有 SCOPE 和 LANE 预判、合并证据有效、部署屏障未暂停，且没有冻结的合并 spec，才能批准。控制文件排除规则与下方自动扩 SCOPE 一节相同，任何条件不满足都整批转处置 Agent。
+调度器按跟踪的仓库档位派发 `driver exec`，档位为 `auto` 时传入 `--auto`。被拒但仍有在途票的仓库也使用其跟踪档位。执行器沿用派发时的值。手工运行 `driver exec` 时省略 `--auto` 即按 `manual` 执行。生效档位为 `auto` 时，执行器对有效的 `SCOPE-BLOCKED` 申请直接使用处置阶段的确定性规则，无需 `resolver-state` 记录，也无需启用 `AGENT_WORKER_AUTO_SCOPE`。申请每次最多 10 个仓库内字面路径，不得命中 lane 3 或控制文件；worker、普通处置和终审合计每票最多自动批准 2 次。票未取消、具有 SCOPE 和 LANE 预判、合并证据有效、部署屏障未暂停，且没有冻结的合并 spec，才能批准。控制文件排除规则与下方自动扩 SCOPE 一节相同，任何条件不满足都整批转处置 Agent。
 
 批准时先写一条 `扩SCOPE：worker-auto <RFC3339>` 审计评论，附条件、批准次数与路径，再更新票面、简报和 gate spec，通过 `workerScopeExtended` 进入 correction。该评论计入处置阶段的批准上限，但不含归属、阶段或 `resolver-state` 行。正常重试遇到票面已包含的路径不重复写入。读写失败停止执行，写入故障窗口沿用已有 worker 扩展流程。
 
@@ -576,8 +576,8 @@ orca-factory-driver gear clear OF
 本机覆盖保存在状态目录的 `gear.json`。状态目录默认是 `~/.local/state/orca-factory`，可用 `AGENT_DRIVER_STATE_ROOT` 指定。
 
 - 每条覆盖以 Orca 登记的 `canonicalKey` 为键，对应飞书项目表的“仓库远端”。只有该检出仓库配置 `AGENT_ISSUE_BACKEND=feishu` 且登记键等于其 `AGENT_FEISHU_PROJECT` 时覆盖才生效；`gear set` 遇到其他后端或不相等时拒绝写入。条目另记仓库根路径 `path`、操作者、理由和时间，`path` 只用于审计。
-- 项目发现（`serve` 调度、被拒项目的在途票恢复、`resume-deployment`、`gear status`、`config`）、`resolve` 和 `exec` 都按 Orca 登记的 `canonicalKey` 读取覆盖，忽略条目里的审计路径和 Git origin。
-- `resolve` 和 `exec` 只对飞书后端读取 `gear.json`。文件中有本仓库的 `AGENT_FEISHU_PROJECT` 条目时，两者解析仓库根路径和各登记路径的符号链接，用匹配的登记键加载覆盖。没有匹配时沿用仓库档位。Orca 查询失败、匹配多于一个或本仓库覆盖条目损坏时，`resolve` 退出，`exec` 记一条 WARN 并按 `manual` 继续执行。执行器只在启动时取一次档位，后续 `gear` 改动在下次启动时生效。
+- 项目发现（`serve` 调度、被拒项目的在途票恢复、`resume-deployment`、`gear status`、`config`）和 `resolve` 按 Orca 登记的 `canonicalKey` 读取覆盖，忽略条目里的审计路径和 Git origin。
+- `resolve` 只对飞书后端读取 `gear.json`。文件中有本仓库的 `AGENT_FEISHU_PROJECT` 条目时，`resolve` 解析仓库根路径和各登记路径的符号链接，用匹配的登记键加载覆盖。没有匹配时沿用仓库档位。Orca 查询失败、匹配多于一个或本仓库覆盖条目损坏时，`resolve` 退出。
 - 被拒仓库再次探测在途票时沿用首次探测的配置（账本身份）。被拒但仍有在途票的仓库每轮发现时只随本机覆盖的设置或清除刷新 `AGENT_MODE`，不热加载仓库 env 自身的 `AGENT_MODE`，其余配置保持跟踪时的值；账本身份键变化，或该路径的登记键不再等于跟踪中的 `AGENT_FEISHU_PROJECT` 时不刷新。没有远端身份（`canonicalKey` 为空）的登记不叠加覆盖。仓库搬到新路径并以同一 `canonicalKey` 重新登记后，覆盖继续生效。同一路径改登记为别的 `canonicalKey`、而仓库配置仍指向原账本项目时，两个键的覆盖都不生效。Orca 缓存的 `canonicalKey` 与本机 origin 漂移时，以登记键为准。只读展示的 `status --fresh` 按路径读取仓库配置，不叠加覆盖。
 - `gear set` 和 `gear clear` 先按文件系统解析参数（`.`、`..` 和含 `/` 的参数）中的符号链接与 `..`，结果仍为相对路径时再拼接解析符号链接后的物理当前目录，与同样解析后的 Orca 登记仓库根路径比较。其余参数是编号前缀。driver 用仓库自身配置建立飞书客户端，用前缀查询项目表，忽略大小写，再按“仓库远端”匹配 Orca 登记。不含 `/` 的参数同时是当前目录下的已登记仓库目录时，也按路径匹配；路径与前缀命中不同仓库时视为有歧义，拒绝写入。两种方式合计要求恰好命中一个仓库。
 
@@ -585,7 +585,7 @@ orca-factory-driver gear clear OF
 
 手动用 `gear set` 切到 `auto` 同样不补处理已转人的历史票，也不提供按票切换。`config [--json]` 的 `routing` 显示生效的 `AGENT_MODE` 与来源，`roles` 的 `resolver_top` 显示 `AGENT_ROLE_RESOLVER_TOP` 终审档位，未配置终审档位时省略该角色。
 
-worker 报告有效的 `SCOPE-BLOCKED` 时，执行器按启动时的生效档位判断。调度器与执行器都以仓库档位为基础（省略时为 `manual`），再应用已登记仓库的有效 `gear.json` 覆盖，忽略进程环境中的 `AGENT_MODE`。生效档位为 `auto` 时，执行器当场判断扩 SCOPE。每次最多 10 个路径，不命中 lane 3 或控制文件，且没有冻结合并 spec，沿用处置阶段的票面与合并证据校验。批准后写审计并进入 correction，拒绝则转处置 Agent。worker 的 `扩SCOPE：worker-auto ` 与处置的 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 合计每票最多 2 次。
+worker 报告有效的 `SCOPE-BLOCKED` 时，执行器沿用派发时的档位。调度器只在跟踪的仓库档位为 `auto` 时传入 `--auto`，被拒仓库的在途票也适用。手工运行时省略 `--auto` 即按 `manual` 执行。生效档位为 `auto` 时，执行器当场判断扩 SCOPE。每次最多 10 个路径，不命中 lane 3 或控制文件，且没有冻结合并 spec，沿用处置阶段的票面与合并证据校验。批准后写审计并进入 correction，拒绝则转处置 Agent。worker 的 `扩SCOPE：worker-auto ` 与处置的 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 合计每票最多 2 次。
 
 `auto` 隐含 `AGENT_AUTO_REVIEW` 的 `scope`、`release`、`top`，与显式开关取并集。`auto` 下票的归属不会变成 `人`，也不发转人卡片：
 

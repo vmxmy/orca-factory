@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -34,6 +35,60 @@ func (s *labelStore) UpdateIssue(_ context.Context, _ string, state string, add,
 func modeRuntime(store issues.Store, env map[string]string) *Runtime {
 	repo := config.Repository{Path: "/repo", Env: env}
 	return &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+}
+
+func TestLaunchPassesTrackedAgentMode(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		merging    bool
+		command    string
+		title      string
+	}{
+		{"tracked auto", "auto", false, "exec '/driver' exec --auto 'ENG-1'", "driver exec ENG-1"},
+		{"tracked manual with auto on disk", "manual", false, "exec '/driver' exec 'ENG-1'", "driver exec ENG-1"},
+		{"merging tracked auto", "auto", true, "exec '/driver' exec --merging --auto 'ENG-1'", "driver exec --merging ENG-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			if tc.mode == "manual" {
+				envFile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
+				if err := os.MkdirAll(filepath.Dir(envFile), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(envFile, []byte("AGENT_MODE=auto\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bodies := []string{"阶段: 写 correction\n归属: 执行器 term=- run=- attempt=0"}
+			if tc.merging {
+				bodies = append(bodies, merge.HandoffPrefix+`{"queue_id":"q1"}`, merge.ProgressPrefix+`{"queue_id":"q1","phase":"correction"}`)
+			}
+			comments := evidenceComments(bodies...)
+			oc := &fakeOrca{}
+			r := &Runtime{
+				Clients:      map[string]issues.Store{repo: &fakeIssues{issueComments: comments}},
+				Repositories: map[string]config.Repository{repo: {Path: repo, Env: map[string]string{"AGENT_MODE": tc.mode}}},
+				Orca:         oc,
+				DriverPath:   "/driver",
+			}
+			if err := r.Launch(t.Context(), fromEvidence(t, Ticket{Identifier: "ENG-1", Repo: repo}, comments)); err != nil {
+				t.Fatal(err)
+			}
+			if len(oc.launches) != 1 {
+				t.Fatalf("got %d terminal launches, want 1", len(oc.launches))
+			}
+			launch := oc.launches[0]
+			if !strings.HasPrefix(launch.Command, tc.command) {
+				t.Errorf("command = %q, want prefix %q", launch.Command, tc.command)
+			}
+			if tc.mode == "manual" && strings.Contains(launch.Command, "--auto") {
+				t.Errorf("manual launch contains --auto: %q", launch.Command)
+			}
+			if launch.Title != tc.title {
+				t.Errorf("title = %q, want %q", launch.Title, tc.title)
+			}
+		})
+	}
 }
 
 func assertParked(t *testing.T, store *labelStore, ticket Ticket) {

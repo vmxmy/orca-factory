@@ -24,7 +24,7 @@ import (
 
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
-func RunTicket(ctx context.Context, identifier string, merging bool) (result Result, err error) {
+func RunTicket(ctx context.Context, identifier string, merging, auto bool) (result Result, err error) {
 	session, err := maintenance.Session()
 	if err != nil {
 		return Result{}, err
@@ -55,6 +55,10 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, err
 	}
 	e.Config.Terminal = terminal
+	e.Config.Mode = "manual"
+	if auto {
+		e.Config.Mode = "auto"
+	}
 	cfg, err := config.Load(home())
 	if err != nil {
 		return Result{}, errors.New("driver configuration could not be loaded")
@@ -81,11 +85,6 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, errors.New("GitHub initialization failed")
 	}
 	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
-	mode, modeErr := agentMode(ctx, repo, oc.RepoList)
-	e.Config.Mode = mode
-	if modeErr != nil {
-		logger.warn("using manual mode after repository mode lookup failed: %s", logErrorSummary(modeErr))
-	}
 	e.Orca, e.Issues, e.GitHub = oc, store, gc
 	e.Config.Root, err = executorStateRoot()
 	if err != nil {
@@ -97,46 +96,6 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	delegated = true
 	e.Config.Merging = merging
 	return e.Start(ctx, ticket)
-}
-
-func agentMode(ctx context.Context, repo string, list func(context.Context) ([]orca.Repo, error)) (string, error) {
-	profile, err := config.LoadRepository(repo)
-	if err != nil {
-		return "manual", err
-	}
-	overrides, err := config.HasGearOverride(profile)
-	if err != nil {
-		return "manual", err
-	}
-	if overrides {
-		registrations, err := list(ctx)
-		if err != nil {
-			return "manual", err
-		}
-		root, err := filepath.EvalSymlinks(repo)
-		if err != nil {
-			return "manual", err
-		}
-		var matches []orca.Repo
-		for _, registered := range registrations {
-			if path, err := filepath.EvalSymlinks(registered.Path); err == nil && path == root {
-				matches = append(matches, registered)
-			}
-		}
-		if len(matches) > 1 {
-			return "manual", errors.New("ambiguous repository path")
-		}
-		if len(matches) == 1 {
-			profile, err = config.LoadRegisteredRepository(matches[0].CanonicalKey, repo)
-			if err != nil {
-				return "manual", err
-			}
-		}
-	}
-	if profile.Env["AGENT_MODE"] == "auto" {
-		return "auto", nil
-	}
-	return "manual", nil
 }
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and
