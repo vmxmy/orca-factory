@@ -150,9 +150,13 @@ orca-factory-driver status --json
 
 票面 CHECK 写错导致执行器反复 correction 时，先改正票面，再在账本追加一条以 `gate-spec-refresh:` 开头的评论，例如 `gate-spec-refresh: 已改正 CHECK`。执行器在下一次 gate 运行前写回执 `gate-spec-refresh 已执行 attempt=N term=<终端>` 并退出；调度器按原 attempt 重启该阶段，新执行器用新票面重写 `gate.spec`，不计执行器失败和 correction 次数。每个 attempt 只生效一次，同一 attempt 内再写的指令被忽略。指令到达时若执行器已进入交接，账本出现 `gate-spec-refresh 未执行：已进入交接，按旧 spec 冻结`，交接按旧 spec 继续。指令只作用于执行器阶段；已进入合并交接的票不受影响。指令没有作者校验，契约见 [CONTRACTS.md](CONTRACTS.md)。
 
-默认情况下，worker 报告缺 SCOPE 外文件时不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
+`manual` 模式且未启用安全文件开关时，worker 报告缺 SCOPE 外文件不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
 
-在 driver 进程环境设置 `AGENT_WORKER_AUTO_SCOPE=1` 可启用安全文件自动扩 SCOPE，默认关闭，其他值也视为关闭。该开关从进程环境读取，仅写入 `agent-graph.env` 不会生效。它独立于处置阶段的 `AGENT_AUTO_REVIEW=scope`。
+生效模式为 `auto` 时，执行器对有效的 `SCOPE-BLOCKED` 申请直接使用处置阶段的确定性规则，无需 `resolver-state` 记录，也无需启用 `AGENT_WORKER_AUTO_SCOPE`。申请每次最多 10 个仓库内字面路径，不得命中 lane 3 或控制文件；worker、普通处置和终审合计每票最多自动批准 2 次。票未取消、具有 SCOPE 和 LANE 预判、合并证据有效、部署屏障未暂停，且没有冻结的合并 spec，才能批准。控制文件排除规则与下方自动扩 SCOPE 一节相同，任何条件不满足都整批转处置 Agent。
+
+批准时先写一条 `扩SCOPE：worker-auto <RFC3339>` 审计评论，附条件、批准次数与路径，再更新票面、简报和 gate spec，通过 `workerScopeExtended` 进入 correction。该评论计入处置阶段的批准上限，但不含归属、阶段或 `resolver-state` 行。正常重试遇到票面已包含的路径不重复写入。读写失败停止执行，写入故障窗口沿用已有 worker 扩展流程。
+
+在 driver 进程环境设置 `AGENT_WORKER_AUTO_SCOPE=1` 可启用安全文件自动扩 SCOPE，默认关闭，其他值也视为关闭。该开关从进程环境读取，仅写入 `agent-graph.env` 不会生效。`manual` 模式下仍沿用下面的白名单；`auto` 模式使用上面的共用规则，拒绝后不回退到白名单。它独立于处置阶段的 `AGENT_AUTO_REVIEW=scope`。
 
 启用后，执行器只自动批准已有字面 Go 源文件同目录的 `*_test.go` 和 `README.md`，类别分别是「同包 Go 测试」和「同包 README」。原 SCOPE 中的 glob 和测试文件不能作为同包依据。所有申请路径仍须通过 intake 共用的字面路径与 lane 3 校验。路径任一段为 `.github`、`agent-gates`、`deploy`、`prod`、`production`、`migrations`、`data`，以 `.env` 开头，或含 `secret`、`credential` 时拒绝自动扩展，比较不区分大小写。混入任何非安全文件就整批交处置 Agent，取消的票、票面 lane 3、缺少 SCOPE 或已有冻结合并 spec 的票也不自动扩展。
 
@@ -579,6 +583,10 @@ orca-factory-driver gear clear OF
 
 手动用 `gear set` 切到 `auto` 同样不补处理已转人的历史票，也不提供按票切换。`config [--json]` 的 `routing` 显示生效的 `AGENT_MODE` 与来源，`roles` 的 `resolver_top` 显示 `AGENT_ROLE_RESOLVER_TOP` 终审档位，未配置终审档位时省略该角色。
 
+执行器在启动时读取仓库 `AGENT_MODE`，以飞书项目键 `AGENT_FEISHU_PROJECT` 读取本机 gear 覆盖，缺省为 `manual`。手工运行 `driver exec` 也使用此生效模式，启动后不热加载配置或 gear。
+
+`auto` 模式也在 worker 报告有效的 `SCOPE-BLOCKED` 时当场判断扩 SCOPE：每次最多 10 个路径，不命中 lane 3 或控制文件，且没有冻结合并 spec，沿用处置阶段的票面与合并证据校验。批准后写审计并进入 correction，拒绝则转处置 Agent。worker 的 `扩SCOPE：worker-auto ` 与处置的 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 合计每票最多 2 次。
+
 `auto` 隐含 `AGENT_AUTO_REVIEW` 的 `scope`、`release`、`top`，与显式开关取并集。`auto` 下票的归属不会变成 `人`，也不发转人卡片：
 
 1. 普通处置 escalate 未命中必须由人决定的情形时，不论是否进入过终审，非空扩 SCOPE 申请先按现有确定性规则审批。批准后写 `扩SCOPE：auto` 与 waiting 回执，交普通处置继续，保留既有终审使用记录，不消耗终审机会；拒绝后，未用过终审则进入一次终审，已用过则搁置。读写失败返回错误，由下一轮巡检重试。其他 escalate 沿用终审流程，终审已用过则搁置。
@@ -607,7 +615,7 @@ orca-factory-driver gear clear OF
 启用后，调度器在飞书转人卡片发送前重读票据和评论。最新 `resolver-state` 必须仍是本次 `human`，且申请是 `action=escalate`、`class=scope-extension` 的非空 `scope` 数组。自动批准沿用人工扩 SCOPE 的校验：票未取消、有 SCOPE 和 LANE 预判、不属 lane 3、合并证据有效且部署屏障未暂停。另须同时满足：
 
 - 所有路径通过现有 `scopeAddition` 的仓库内字面路径校验，不命中 `AGENT_LANE3_GLOBS`。
-- 每次不超过 10 个路径，每张票累计自动批准不超过 2 次。次数从账本中以 `扩SCOPE：auto ` 或 `扩SCOPE：top-resolver ` 开头的评论合计恢复，重启不重置。
+- 每次不超过 10 个路径，每张票累计自动批准不超过 2 次。次数从账本中以 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 或 `扩SCOPE：worker-auto ` 开头的评论合计恢复，重启不重置。
 - 不触及 `.github/`、`core/gate.sh`、`scripts/agent-gates/gate*.sh`、`scripts/agent-gates/agent-graph.env`、`driver/deploy/`、根 `Makefile`、任意层级的 `.env*` 或 `*secrets*`。
 
 批准与人工批复共用 `intake.applyScopeReview`：先扩票面 SCOPE，再写一条评论，不发卡片。评论格式为 `扩SCOPE：auto <RFC3339 时间>\n条件：<满足的条件和本次计数>\n路径：<路径...>\nresolver-state {"version":1,"attempt":<本次 attempt>,"phase":"waiting"}`。未满足条件时仍发人工卡片，注明“未自动批准”及原因。读写失败返回错误，后续巡检重读账本后重试；若票面已改而评论未写成，重试不会重复添加路径。无需配置通知群也可自动批准。

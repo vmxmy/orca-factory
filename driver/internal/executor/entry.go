@@ -196,7 +196,18 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 			}
 		}
 	}
-	cfg := Config{Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
+	mode := "manual"
+	// Legacy profiles without mode or a Feishu ledger cannot have a gear override.
+	if assigned["AGENT_MODE"] || values[12] == "feishu" {
+		repository, err := config.LoadRegisteredRepository(values[15], repo)
+		if err != nil {
+			return Executor{}, nil, err
+		}
+		if repository.Env["AGENT_MODE"] != "" {
+			mode = repository.Env["AGENT_MODE"]
+		}
+	}
+	cfg := Config{Mode: mode, Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
 		Agent: entry.Agent, Model: entry.Model, Effort: entry.Effort, Escalate: escalate,
 		TierSettings: settings, TierChain: chain, WorkerSkills: workerSkills, Lane3Globs: strings.Fields(values[11])}
 	if cfg.Model == "" {

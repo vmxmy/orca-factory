@@ -7,8 +7,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
 func TestScopeBlockedReportGoesToResolverWithoutCorrection(t *testing.T) {
@@ -71,5 +73,92 @@ func TestScopeBlockedFiles(t *testing.T) {
 	}
 	if got := scopeBlockedFiles("SCOPE-BLOCKED: b.go", filepath.Join(t.TempDir(), "missing")); got != nil {
 		t.Fatalf("unreadable spec verified %q", got)
+	}
+}
+
+func TestWorkerScopeBlockedAutoRule(t *testing.T) {
+	const docs = "docs/conversation-follow-up-center.md docs/system-manual.md"
+	for _, tc := range []struct {
+		name, mode, gear, files string
+		prior, frozen, approved bool
+	}{
+		{name: "auto docs", mode: "auto", files: docs, approved: true},
+		{name: "control files", mode: "auto", files: "core/gate.sh scripts/agent-gates/gate.sh"},
+		{name: "eleven paths", mode: "auto", files: "a.go b.go c.go d.go e.go f.go g.go h.go i.go j.go k.go"},
+		{name: "two approvals", mode: "auto", files: docs, prior: true},
+		{name: "frozen merge spec", mode: "auto", files: docs, frozen: true},
+		{name: "manual docs", mode: "manual", files: docs},
+		{name: "auto overridden manual", mode: "auto", gear: "manual", files: docs},
+		{name: "manual overridden auto", mode: "manual", gear: "auto", files: docs, approved: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
+			e, o, tools, recovery, ledger, ticket := recoveryFixture(t)
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+			repo := t.TempDir()
+			profile := filepath.Join(repo, "scripts/agent-gates/agent-graph.env")
+			if err := os.MkdirAll(filepath.Dir(profile), 0700); err != nil {
+				t.Fatal(err)
+			}
+			body := "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD=review\nAGENT_TIER_DEFAULT=codex::low\nAGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_PROJECT=owner/repo\nAGENT_MODE=" + tc.mode + "\n"
+			if err := os.WriteFile(profile, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.gear != "" {
+				if err := os.WriteFile(filepath.Join(os.Getenv("AGENT_DRIVER_STATE_ROOT"), "gear.json"), []byte(`{"owner/repo":{"mode":"`+tc.gear+`"}}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			configured, _, err := repositoryExecutor(context.Background(), repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			configured.Config.Owner = e.Config.Owner
+			configured.Config.Repository = e.Config.Repository
+			configured.Config.Repo = e.Config.Repo
+			configured.Config.Root = e.Config.Root
+			configured.Config.Terminal = e.Config.Terminal
+			e.Config = configured.Config
+			ticket.Scope = "unit/change.go"
+			face := "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
+			store := &scopeIssues{budgetIssues: ledger, description: face}
+			e.Issues = store
+			if tc.prior {
+				ledger.comments = []string{"扩SCOPE：auto 2026-11-21T00:00:00Z", "扩SCOPE：worker-auto 2026-11-21T01:00:00Z\n路径：docs/previous.md"}
+			}
+			initialComments := len(ledger.comments)
+			o.failFirst = true
+			o.failBody = "SCOPE-BLOCKED: " + tc.files
+			var restored *checkpoint
+			if tc.frozen {
+				o.starts = []orca.StartOptions{{Task: "task_one"}}
+				restored = &checkpoint{Run: "run_one", Task: "task_one", Dispatch: "ctx_one", Worktree: "/original/worktree", MergeSpec: "UNIT: executor\nSCOPE: unit/change.go\nCHECK: true\n"}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			result, err := e.execute(ctx, ticket, restored, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			comments := strings.Join(ledger.comments[initialComments:], "\n")
+			if !tc.approved {
+				if store.description != face || result.State.Owner != machine.OwnerResolver || result.State.Phase != machine.PhaseResolver || result.State.Corrections != 0 || recovery.sessions != 0 || !strings.Contains(comments, "Agent处置: ") || strings.Contains(comments, "扩SCOPE：worker-auto ") {
+					t.Fatalf("refusal changed ticket or skipped resolver: face=%q state=%+v comments=%q", store.description, result.State, comments)
+				}
+				return
+			}
+			wantScope := "unit/change.go " + docs
+			if !strings.Contains(store.description, "## SCOPE\n"+wantScope+"\n") || result.State.Corrections != 1 || recovery.sessions != 1 || recovery.children != 1 || len(o.starts) != 2 || result.State.Infra != 0 {
+				t.Fatalf("auto request did not extend scope and enter correction: face=%q state=%+v sessions=%d", store.description, result.State, recovery.sessions)
+			}
+			if strings.Count(comments, "扩SCOPE：worker-auto ") != 1 || strings.Contains(comments, "Agent处置: ") || !strings.Contains(comments, "路径："+docs) {
+				t.Fatalf("audit or ownership: %q", comments)
+			}
+			spec, err := os.ReadFile(filepath.Join(e.Config.Root, e.Config.Repository, ticket.Identifier, "gate.spec"))
+			if err != nil || !strings.Contains(string(spec), "SCOPE: "+wantScope+"\n") || !strings.Contains(recovery.requests[0].Brief, "SCOPE: "+wantScope+"\n") || tools.gateCalls != 1 || tools.reviewCalls != 1 {
+				t.Fatalf("scope propagation or gates: spec=%q err=%v", spec, err)
+			}
+		})
 	}
 }

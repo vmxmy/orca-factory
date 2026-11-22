@@ -314,12 +314,16 @@ func ExtendWorkerScope(ctx context.Context, ledger ScopeLedger, id, scope string
 	if FaceLaneThree(ticket.Description) {
 		return false, nil
 	}
-	face, changed, found := withScope(ticket.Description, paths)
+	return applyWorkerScope(ctx, ledger, id, ticket.Description, paths, strings.Join(audit, "\n"))
+}
+
+func applyWorkerScope(ctx context.Context, ledger ScopeLedger, id, description string, paths []string, audit string) (bool, error) {
+	face, changed, found := withScope(description, paths)
 	if !found {
 		return false, nil
 	}
 	if changed {
-		if _, err := ledger.CreateComment(ctx, id, strings.Join(audit, "\n")); err != nil {
+		if _, err := ledger.CreateComment(ctx, id, audit); err != nil {
 			return false, err
 		}
 		patch, err := json.Marshal(map[string]string{"description": face})

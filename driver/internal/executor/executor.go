@@ -66,7 +66,7 @@ type Config struct {
 	// Merging requires durable correction evidence; it never authorizes a fresh run.
 	Merging                                                             bool
 	Lane3Globs                                                          []string
-	Machine                                                             string
+	Machine, Mode                                                       string
 	TierSettings                                                        map[string]string
 	WorkerSkills                                                        []string
 	TierChain                                                           []string
@@ -517,8 +517,14 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			failedSubject = workerSubject(report)
 			if scopeBlocked = scopeBlockedFiles(report.Body, spec); len(scopeBlocked) > 0 {
 				event = machine.EvWorkerScopeBlocked
-				if os.Getenv("AGENT_WORKER_AUTO_SCOPE") == "1" && cp.MergeSpec == "" {
-					extended, extendErr := intake.ExtendWorkerScope(ctx, e.Issues, t.ID, t.Scope, scopeBlocked, strings.Join(c.Lane3Globs, " "))
+				if cp.MergeSpec == "" {
+					var extended bool
+					var extendErr error
+					if c.Mode == "auto" {
+						extended, extendErr = intake.AutoApproveWorkerScope(ctx, e.Issues, t.ID, scopeBlocked, strings.Join(c.Lane3Globs, " "), e.Now())
+					} else if os.Getenv("AGENT_WORKER_AUTO_SCOPE") == "1" {
+						extended, extendErr = intake.ExtendWorkerScope(ctx, e.Issues, t.ID, t.Scope, scopeBlocked, strings.Join(c.Lane3Globs, " "))
+					}
 					if extendErr != nil {
 						return result, extendErr
 					}
