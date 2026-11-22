@@ -251,7 +251,7 @@ func TestWorkerScopeBlockedAwaitsLaunchReceipt(t *testing.T) {
 	}
 }
 
-func TestAutoOwnedRechecksTheApprovalSnapshot(t *testing.T) {
+func TestAutoApprovalRechecksItsSnapshot(t *testing.T) {
 	const registered, claimed, human = "归属: 执行器 term=term_exec run=run_one attempt=1", "归属: 执行器 term=- run=- attempt=2", "转人: 人工接手"
 	for _, tc := range []struct {
 		name       string
@@ -277,7 +277,7 @@ func TestAutoOwnedRechecksTheApprovalSnapshot(t *testing.T) {
 				comments = append(comments, task.Comment{Source: task.SourceDriver, Body: body})
 			}
 			e := &Executor{Launch: Launch{Dispatched: tc.dispatched}}
-			ok, err := e.autoOwned("term_exec")(comments)
+			_, ok, err := e.autoApproval(t.Context(), Ticket{}, "term_exec", ScopeMode{Mode: "auto"})(comments)
 			if ok != tc.ok || errors.Is(err, errLaunchSuperseded) != tc.lost || err != nil && !tc.lost {
 				t.Fatalf("ok=%v err=%v", ok, err)
 			}
@@ -285,22 +285,57 @@ func TestAutoOwnedRechecksTheApprovalSnapshot(t *testing.T) {
 	}
 }
 
-func TestScopeModeRereadsLane3ForADispatchedApproval(t *testing.T) {
+func TestAutoApprovalReadsLane3AfterItsSnapshot(t *testing.T) {
+	const profile = "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\nAGENT_TIER_DEFAULT=codex::low\nAGENT_LANE3_GLOBS="
 	for _, tc := range []struct {
-		name string
-		read func(context.Context) ([]string, error)
-		want ScopeMode
+		name       string
+		dispatched bool
+		tracked    bool
+		current    string
+		rewritten  bool
+		ok         bool
 	}{
-		{"current globs", func(context.Context) ([]string, error) { return []string{"docs/*"}, nil }, ScopeMode{Mode: "auto", Lane3Globs: []string{".env*", "docs/*"}}},
-		{"unreadable", func(context.Context) ([]string, error) { return nil, errors.New("profile unreadable") }, ScopeMode{}},
+		{"unchanged", true, true, ".env*", false, true},
+		{"dispatched with a profile written since launch", true, true, ".env*", true, false},
+		{"dispatched without a profile version", true, false, ".env*", false, false},
+		{"operator with a profile written since its mode was read", false, true, ".env*", true, false},
+		{"operator outside the scheduler", false, false, "docs/*", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e, _, _, _, ledger, ticket := recoveryFixture(t)
-			e.Issues = &scopeIssues{budgetIssues: ledger}
-			e.Launch.Dispatched, e.LaunchReceipts, e.CurrentLane3 = true, true, tc.read
-			ledger.comments = []string{modeReceipt("auto") + "\nlane3: .env*", "归属: 执行器 term=term_exec run=run_one attempt=1"}
-			if mode, err := e.scopeMode(t.Context(), ticket, "term_exec"); err != nil || !reflect.DeepEqual(mode, tc.want) {
-				t.Fatalf("mode=%+v err=%v, want %+v", mode, err, tc.want)
+			t.Setenv("HOME", t.TempDir())
+			repo := t.TempDir()
+			path := filepath.Join(repo, "scripts/agent-gates/agent-graph.env")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			write := func(globs string, at time.Time) {
+				if err := os.WriteFile(path, []byte(profile+"'"+globs+"'\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(path, at, at); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(".env*", time.Unix(1700000000, 0))
+			version, err := ProfileVersion(repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e, _, _, _, _, ticket := recoveryFixture(t)
+			e.Config.Lane3Globs = []string{"start/*"}
+			e.bindMode(repo, map[string]string{"AGENT_ISSUE_BACKEND": "feishu"}, nil)
+			e.Launch.Dispatched = tc.dispatched
+			mode := ScopeMode{Mode: "auto", Lane3Globs: []string{"tracked/*"}, Profile: version}
+			if !tc.tracked {
+				mode.Profile = ""
+			}
+			approve := e.autoApproval(t.Context(), ticket, "term_exec", mode)
+			if tc.rewritten {
+				write(tc.current, time.Unix(1700000060, 0))
+			}
+			lane3, ok, err := approve([]task.Comment{{Source: task.SourceDriver, Body: modeReceipt("auto")}, {Source: task.SourceDriver, Body: "归属: 执行器 term=term_exec run=run_one attempt=1"}})
+			if err != nil || ok != tc.ok || ok && lane3 != "start/* tracked/* "+tc.current {
+				t.Fatalf("lane3=%q ok=%v err=%v", lane3, ok, err)
 			}
 		})
 	}

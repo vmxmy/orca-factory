@@ -141,14 +141,18 @@ func TestRecordedAutoScopeApprovalCount(t *testing.T) {
 	}
 }
 
-func stillOwned([]task.Comment) (bool, error) { return true, nil }
+func stillOwned([]task.Comment) (string, bool, error) { return "", true, nil }
 
 func TestWorkerAutoScopeRefusesLostTicket(t *testing.T) {
 	h := scopedTicket(t, `{"action":"escalate","class":"scope-extension","reason":"scope","body":"proof","scope":["resolver.go"]}`)
+	lane3 := func([]task.Comment) (string, bool, error) { return "docs/*", true, nil }
+	if approved, err := AutoApproveWorkerScope(t.Context(), h.ledger, "OF-12", []string{"docs/system-manual.md"}, h.g.now(), lane3); approved || err != nil {
+		t.Fatalf("lane 3 approved=%v err=%v", approved, err)
+	}
 	lost := errors.New("ticket lost")
 	for _, path := range []string{"docs/system-manual.md", "core/gate.sh"} {
 		for _, want := range []error{lost, nil} {
-			approved, err := AutoApproveWorkerScope(t.Context(), h.ledger, "OF-12", []string{path}, "", h.g.now(), func([]task.Comment) (bool, error) { return false, want })
+			approved, err := AutoApproveWorkerScope(t.Context(), h.ledger, "OF-12", []string{path}, h.g.now(), func([]task.Comment) (string, bool, error) { return "", false, want })
 			if approved || !errors.Is(err, want) || len(h.ledger.edits) != 0 {
 				t.Fatalf("path=%s approved=%v err=%v edits=%q", path, approved, err, h.ledger.edits)
 			}
@@ -164,7 +168,7 @@ func TestWorkerAutoScopeAuditPreservesEvidenceAndCountsAcrossStages(t *testing.T
 		t.Fatal(err)
 	}
 	for range 2 {
-		approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/system-manual.md"}, "", h.g.now(), stillOwned)
+		approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/system-manual.md"}, h.g.now(), stillOwned)
 		if err != nil || !approved {
 			t.Fatalf("approved=%v err=%v", approved, err)
 		}
@@ -184,7 +188,7 @@ func TestWorkerAutoScopeAuditPreservesEvidenceAndCountsAcrossStages(t *testing.T
 	if !strings.Contains(events[len(events)-1], "第 2 次自动批准") {
 		t.Fatalf("worker approval not counted: %q", events)
 	}
-	approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/third.md"}, "", h.g.now(), stillOwned)
+	approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/third.md"}, h.g.now(), stillOwned)
 	if err != nil || approved {
 		t.Fatalf("third approval: approved=%v err=%v", approved, err)
 	}

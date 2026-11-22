@@ -105,9 +105,13 @@ func RunTicket(ctx context.Context, identifier string, merging bool, launch Laun
 // Feishu ledger proves who wrote an event, and the scheduler tracks no other
 // backend, whose mode therefore comes from the profile alone.
 func (e *Executor) bindMode(repo string, ledger map[string]string, verify func(context.Context, string, map[string]string) (ScopeMode, error)) {
-	e.CurrentLane3 = func(ctx context.Context) ([]string, error) {
+	e.CurrentLane3 = func(ctx context.Context) ([]string, string, error) {
 		current, _, err := repositoryExecutor(ctx, repo)
-		return current.Config.Lane3Globs, err
+		if err != nil {
+			return nil, "", err
+		}
+		version, err := ProfileVersion(repo)
+		return current.Config.Lane3Globs, version, err
 	}
 	if ledger["AGENT_ISSUE_BACKEND"] == "feishu" {
 		e.LaunchReceipts = true
@@ -147,10 +151,22 @@ type Launch struct {
 	CallTimeout time.Duration
 }
 
-// ScopeMode is a repository's AGENT_MODE and the lane 3 globs read with it.
+// ScopeMode is a repository's AGENT_MODE and the lane 3 globs read with it, and
+// the profile version they hold for; "" where the scheduler tracks nothing.
 type ScopeMode struct {
 	Mode       string
 	Lane3Globs []string
+	Profile    string
+}
+
+// ProfileVersion changes whenever the repository profile at path is written, even
+// back to what it said before: the scheduler may still hold what it said between.
+func ProfileVersion(path string) (string, error) {
+	info, err := os.Stat(filepath.Join(path, "scripts", "agent-gates", "agent-graph.env"))
+	if err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(info.ModTime().UnixNano(), 10), nil
 }
 
 // scopeMode is the AGENT_MODE that governs a worker's scope request, empty when
@@ -158,19 +174,6 @@ type ScopeMode struct {
 // executor takes the scheduler's launch receipt and nothing else; any other
 // start verifies the repository's current mode.
 func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (ScopeMode, error) {
-	mode, err := e.governingMode(ctx, t, terminal)
-	if err != nil || mode.Mode != "auto" || e.CurrentLane3 == nil {
-		return mode, err
-	}
-	current, err := e.CurrentLane3(ctx)
-	if err != nil {
-		e.warn("%s lane 3 globs unverified: %s", t.Identifier, logErrorSummary(err))
-		return ScopeMode{}, nil
-	}
-	return ScopeMode{Mode: mode.Mode, Lane3Globs: slices.Concat(mode.Lane3Globs, current)}, nil
-}
-
-func (e *Executor) governingMode(ctx context.Context, t Ticket, terminal string) (ScopeMode, error) {
 	if e.Launch.Dispatched {
 		return e.awaitLaunchedMode(ctx, t, terminal)
 	}
@@ -262,9 +265,9 @@ func launchedMode(comments []task.Comment, terminal string) (mode ScopeMode, pen
 					return ScopeMode{}, false, errLaunchSuperseded
 				}
 			case slices.Contains(words, "mode=auto"):
-				receipts, mode = receipts+1, ScopeMode{Mode: "auto", Lane3Globs: strings.Fields(lane3)}
+				receipts, mode = receipts+1, ScopeMode{Mode: "auto", Lane3Globs: strings.Fields(lane3), Profile: receiptField(words, "profile")}
 			case slices.Contains(words, "mode=manual"):
-				receipts, mode = receipts+1, ScopeMode{Mode: "manual", Lane3Globs: strings.Fields(lane3)}
+				receipts, mode = receipts+1, ScopeMode{Mode: "manual", Lane3Globs: strings.Fields(lane3), Profile: receiptField(words, "profile")}
 			default:
 				receipts += 2
 			}
@@ -305,24 +308,58 @@ func ownershipEvent(comment task.Comment, own string) (registered, foreign bool)
 	return registered, foreign
 }
 
-// autoOwned rechecks, on the snapshot an approval decides on, that this executor
-// still owns the ticket and that the snapshot still grants a dispatched one auto.
-// A registration already seen and now missing proves no ownership.
-func (e *Executor) autoOwned(terminal string) func([]task.Comment) (bool, error) {
-	return func(comments []task.Comment) (bool, error) {
-		if e.Launch.Dispatched {
-			mode, pending, err := launchedMode(comments, terminal)
-			if err == nil && pending {
-				err = errLaunchSuperseded
-			}
-			return err == nil && mode.Mode == "auto", err
+func receiptField(words []string, key string) string {
+	for _, word := range words {
+		if value, ok := strings.CutPrefix(word, key+"="); ok {
+			return value
 		}
-		held, err := operatorOwned(comments, terminal)
-		if err == nil && !held {
-			err = errLaunchSuperseded
-		}
-		return held, err
 	}
+	return ""
+}
+
+// autoApproval rechecks an approval on the snapshot it decides on and supplies the
+// lane 3 globs it must avoid, read after that snapshot. A registration already seen
+// and now missing proves no ownership.
+func (e *Executor) autoApproval(ctx context.Context, t Ticket, terminal string, mode ScopeMode) func([]task.Comment) (string, bool, error) {
+	return func(comments []task.Comment) (string, bool, error) {
+		if err := e.autoOwned(comments, terminal); err != nil {
+			return "", false, err
+		}
+		if e.Launch.Dispatched {
+			// Registering twice in one terminal voids the receipt already read.
+			if current, _, err := launchedMode(comments, terminal); err != nil || current.Mode != "auto" {
+				return "", false, err
+			}
+		}
+		var current []string
+		if e.CurrentLane3 != nil {
+			globs, version, err := e.CurrentLane3(ctx)
+			if err == nil && (e.Launch.Dispatched || mode.Profile != "") && version != mode.Profile {
+				err = errors.New("repository profile written since its mode was read")
+			}
+			if err != nil {
+				e.warn("%s lane 3 globs unverified: %s", t.Identifier, logErrorSummary(err))
+				return "", false, nil
+			}
+			current = globs
+		}
+		return strings.Join(slices.Concat(e.Config.Lane3Globs, mode.Lane3Globs, current), " "), true, nil
+	}
+}
+
+func (e *Executor) autoOwned(comments []task.Comment, terminal string) error {
+	if e.Launch.Dispatched {
+		_, pending, err := launchedMode(comments, terminal)
+		if err == nil && pending {
+			return errLaunchSuperseded
+		}
+		return err
+	}
+	held, err := operatorOwned(comments, terminal)
+	if err == nil && !held {
+		return errLaunchSuperseded
+	}
+	return err
 }
 
 // operatorOwned reports that this terminal's latest registration still holds the

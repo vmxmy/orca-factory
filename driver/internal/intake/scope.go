@@ -189,9 +189,10 @@ func autoScopeApproval(paths []string, comments []task.Comment, lane3Globs strin
 }
 
 // AutoApproveWorkerScope applies the automatic scope rules without a resolver-state receipt.
-// owned rechecks the caller's right to approve on the snapshot it decides on.
+// admit rechecks the caller's right to approve on the snapshot it decides on and
+// returns the lane 3 globs to avoid.
 // Its audit records the approval without changing ownership or resolver evidence.
-func AutoApproveWorkerScope(ctx context.Context, ledger ScopeLedger, id string, paths []string, lane3Globs string, now time.Time, owned func([]task.Comment) (bool, error)) (bool, error) {
+func AutoApproveWorkerScope(ctx context.Context, ledger ScopeLedger, id string, paths []string, now time.Time, admit func([]task.Comment) (lane3Globs string, ok bool, err error)) (bool, error) {
 	ticket, err := ledger.Read(ctx, id)
 	if err != nil {
 		return false, err
@@ -200,7 +201,8 @@ func AutoApproveWorkerScope(ctx context.Context, ledger ScopeLedger, id string, 
 	if err != nil {
 		return false, err
 	}
-	if ok, err := owned(comments); err != nil || !ok {
+	lane3Globs, ok, err := admit(comments)
+	if err != nil || !ok {
 		return false, err
 	}
 	if ticket.Metadata.State == "Canceled" || humanReleaseRefusal(id, ticket.Description, latestHumanEvidence(comments)) != "" {

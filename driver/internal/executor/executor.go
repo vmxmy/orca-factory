@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -99,8 +98,9 @@ type Executor struct {
 	Launch Launch
 	// LaunchReceipts reports that the ledger proves who wrote an event.
 	LaunchReceipts bool
-	// CurrentLane3 rereads the checkout's lane 3 globs for an automatic approval.
-	CurrentLane3 func(context.Context) ([]string, error)
+	// CurrentLane3 rereads the checkout's lane 3 globs for an automatic approval,
+	// with the profile version they were read at.
+	CurrentLane3 func(context.Context) ([]string, string, error)
 	// VerifyMode reads the repository's current AGENT_MODE for an executor the
 	// scheduler did not dispatch; nil leaves that mode unverified.
 	VerifyMode func(context.Context) (ScopeMode, error)
@@ -537,8 +537,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 					var extendErr error
 					switch {
 					case mode.Mode == "auto":
-						lane3 := strings.Join(slices.Concat(c.Lane3Globs, mode.Lane3Globs), " ")
-						extended, extendErr = intake.AutoApproveWorkerScope(ctx, e.Issues, t.ID, scopeBlocked, lane3, e.Now(), e.autoOwned(c.Terminal))
+						extended, extendErr = intake.AutoApproveWorkerScope(ctx, e.Issues, t.ID, scopeBlocked, e.Now(), e.autoApproval(ctx, t, c.Terminal, mode))
 					case mode.Mode == "manual" && os.Getenv("AGENT_WORKER_AUTO_SCOPE") == "1":
 						extended, extendErr = intake.ExtendWorkerScope(ctx, e.Issues, t.ID, t.Scope, scopeBlocked, strings.Join(c.Lane3Globs, " "))
 					}

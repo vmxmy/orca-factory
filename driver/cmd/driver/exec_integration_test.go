@@ -56,6 +56,23 @@ func TestEligibleMode(t *testing.T) {
 	}
 }
 
+func TestSettledProfile(t *testing.T) {
+	root, now := t.TempDir(), time.Now()
+	path := filepath.Join(root, "scripts", "agent-gates", "agent-graph.env")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if version, err := settledProfile(root, now); err == nil {
+		t.Fatalf("fresh profile settled as %q", version)
+	}
+	if version, err := settledProfile(root, now.Add(2*projectDiscoveryInterval+time.Minute)); err != nil || version == "" {
+		t.Fatalf("version=%q err=%v", version, err)
+	}
+}
+
 func TestExecCompatibility(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

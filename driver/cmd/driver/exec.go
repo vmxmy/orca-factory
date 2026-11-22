@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -72,11 +73,30 @@ func repositoryMode(ctx context.Context, root string, ledger map[string]string) 
 	if err != nil {
 		return executor.ScopeMode{}, err
 	}
+	version, err := settledProfile(root, time.Now())
+	if err != nil {
+		return executor.ScopeMode{}, err
+	}
 	result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
 	if err != nil {
 		return executor.ScopeMode{}, err
 	}
-	return eligibleMode(result, root, ledger)
+	mode, err := eligibleMode(result, root, ledger)
+	mode.Profile = version
+	return mode, err
+}
+
+// settledProfile is the version of a profile the scheduler has certainly had a
+// discovery to load; until then it may still track an older one.
+func settledProfile(root string, now time.Time) (string, error) {
+	info, err := os.Stat(filepath.Join(root, "scripts", "agent-gates", "agent-graph.env"))
+	if err != nil {
+		return "", err
+	}
+	if now.Sub(info.ModTime()) < 2*projectDiscoveryInterval {
+		return "", errors.New("repository profile written within the scheduler's discovery interval")
+	}
+	return executor.ProfileVersion(root)
 }
 
 func eligibleMode(result projects.Result, root string, ledger map[string]string) (executor.ScopeMode, error) {
