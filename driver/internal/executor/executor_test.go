@@ -358,6 +358,14 @@ func (s *scopeIssues) Read(ctx context.Context, id string) (issues.Task, error) 
 	return issue, err
 }
 
+func (s *scopeIssues) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
+	comments, err := s.budgetIssues.ListComments(ctx, id)
+	for i := range comments {
+		comments[i].Source = task.SourceDriver
+	}
+	return comments, err
+}
+
 func (s *scopeIssues) Edit(ctx context.Context, id string, patch []byte) (issues.Task, error) {
 	var fields struct {
 		Description string `json:"description"`
@@ -388,7 +396,7 @@ func TestWorkerScopeBlockedSafeFilesExtendScope(t *testing.T) {
 			ticket.Scope = "unit/change.go"
 			store := &scopeIssues{budgetIssues: ledger, description: "## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"}
 			e.Issues = store
-			ledger.comments = []string{schedulerClaim("manual")}
+			ledger.comments = []string{launchReceipt("manual")}
 			e.Config.Lane3Globs = strings.Fields(tc.lane3)
 			o.failFirst = true
 			o.failBody = "SCOPE-BLOCKED: " + tc.files

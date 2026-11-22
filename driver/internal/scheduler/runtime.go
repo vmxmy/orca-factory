@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
@@ -645,13 +646,6 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 		return errors.New("invalid scheduler action")
 	}
 	body := fmt.Sprintf("阶段: %s\n归属: %s term=- run=- attempt=%d scheduler-attempt=%d since=%s", a.Phase, owner, a.Attempt, a.Attempt, now.UTC().Format(time.RFC3339))
-	if a.Kind == Claim || a.Kind == Resume {
-		mode := "manual"
-		if autoMode(r.Repositories[t.Repo].Env) {
-			mode = "auto"
-		}
-		body += " mode=" + mode
-	}
 	if a.Kind == Resolve {
 		if t.Run != "" {
 			body = strings.Replace(body, " run=- ", " run="+t.Run+" ", 1)
@@ -708,7 +702,7 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	if r.orcaFailures >= orcaRuntimeFailureThreshold {
 		return &terminalCreateRuntimeError{err: errOrcaRuntimePaused, ticket: t, failures: r.orcaFailures}
 	}
-	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
+	receipt, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
 		var rejected *orca.RejectedError
 		if errors.As(err, &rejected) && rejected.Code == "runtime_error" {
@@ -719,7 +713,30 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	}
 	r.orcaFailures = 0
 	r.orcaCreated++
+	if verb != " exec " {
+		return nil
+	}
+	if err := r.recordLaunchMode(ctx, t, receipt); err != nil {
+		return &terminalCreateUncertainError{fmt.Errorf("executor launch mode receipt: %w", err)}
+	}
 	return nil
+}
+
+// recordLaunchMode binds the repository mode tracked at this launch to the
+// terminal it created; the executor there reads it back before extending scope.
+func (r *Runtime) recordLaunchMode(ctx context.Context, t Ticket, receipt orca.Receipt) error {
+	var terminal struct {
+		Handle string `json:"handle"`
+	}
+	if err := json.Unmarshal(receipt["terminal"], &terminal); err != nil || terminal.Handle == "" {
+		return errors.New("terminal handle missing")
+	}
+	mode := "manual"
+	if autoMode(r.Repositories[t.Repo].Env) {
+		mode = "auto"
+	}
+	_, err := r.Clients[t.Repo].CreateComment(ctx, t.ID, fmt.Sprintf("%sterm=%s attempt=%d mode=%s", executor.LaunchModePrefix, terminal.Handle, t.Attempt, mode))
+	return err
 }
 func (r *Runtime) command(ctx context.Context, dir, path string, args ...string) ([]byte, error) {
 	run := r.Run

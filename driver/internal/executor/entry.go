@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -101,70 +100,64 @@ func RunTicket(ctx context.Context, identifier string, merging bool, verifyMode 
 
 // scopeMode is the AGENT_MODE that governs a worker's scope request, or "" when
 // it cannot be verified and the request belongs to the resolver. The scheduler's
-// claim decides for the executor it dispatched. Any other start verifies the
-// repository's current mode, which must also agree with the claim it resumes.
-func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal, run string) (string, error) {
+// launch receipt decides for the executor it dispatched; any other start
+// verifies the repository's current mode.
+func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (string, error) {
 	comments, err := e.Issues.ListComments(ctx, t.ID)
 	if err != nil {
 		return "", safeDependencyError(err)
 	}
-	claimed, dispatched := claimedMode(comments, terminal, run)
-	if dispatched {
-		return claimed, nil
+	if mode := launchedMode(comments, terminal); mode != "" {
+		return mode, nil
 	}
 	if e.VerifyMode == nil {
 		return "", nil
 	}
-	current, err := e.VerifyMode(ctx)
+	mode, err := e.VerifyMode(ctx)
 	if err != nil {
 		e.warn("%s repository mode unverified: %s", t.Identifier, logErrorSummary(err))
 		return "", nil
 	}
-	if claimed != "" && claimed != current {
-		e.warn("%s repository mode %s differs from its claim %s", t.Identifier, current, claimed)
-		return "", nil
-	}
-	return current, nil
+	return mode, nil
 }
 
-// claimedMode reads the mode the scheduler recorded in the ticket's current
-// claim. dispatched reports that this terminal and Run registered directly after
-// that claim; a later registration under it is an operator's resume.
-func claimedMode(comments []task.Comment, terminal, run string) (mode string, dispatched bool) {
-	comments = slices.Clone(comments)
-	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
-	pending := false
+// launchedMode reads the mode the scheduler recorded for the terminal it created,
+// "" when it created none. Only the first executor registered in that terminal is
+// the dispatched one; a later registration there is an operator's start.
+func launchedMode(comments []task.Comment, terminal string) string {
+	mode, registrations := "", 0
 	for _, comment := range comments {
 		if !comment.CarriesProtocol() {
 			continue
 		}
 		for _, line := range strings.Split(comment.Body, "\n") {
-			ownership, ok := strings.CutPrefix(line, "归属: ")
-			if !ok {
-				continue
-			}
-			fields := map[string]string{}
-			words := strings.Fields(ownership)
-			for _, word := range words {
-				if key, value, ok := strings.Cut(word, "="); ok {
-					fields[key] = value
+			if ownership, ok := strings.CutPrefix(line, "归属: "); ok {
+				words := strings.Fields(ownership)
+				if len(words) > 0 && words[0] == string(machine.OwnerExecutor) && slices.Contains(words, "term="+terminal) {
+					registrations++
 				}
 			}
-			executor := len(words) > 0 && words[0] == string(machine.OwnerExecutor)
-			if executor && fields["term"] != "-" {
-				dispatched = pending && fields["term"] == terminal && fields["run"] == run
-				pending = false
-				continue
+		}
+		receipt, ok := strings.CutPrefix(comment.Body, LaunchModePrefix)
+		words := strings.Fields(receipt)
+		if !ok || comment.Source != task.SourceDriver || !slices.Contains(words, "term="+terminal) {
+			continue
+		}
+		for _, value := range []string{"auto", "manual"} {
+			if slices.Contains(words, "mode="+value) {
+				mode = value
 			}
-			mode, dispatched = "", false
-			if executor && (fields["mode"] == "auto" || fields["mode"] == "manual") {
-				mode = fields["mode"]
-			}
-			pending = mode != ""
 		}
 	}
-	return mode, dispatched
+	if registrations != 1 {
+		return ""
+	}
+	return mode
 }
+
+// LaunchModePrefix starts the scheduler's receipt that binds the AGENT_MODE it
+// tracked at launch to the executor terminal it created.
+const LaunchModePrefix = "派工档位: "
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and
 // applies the machine profile through the same function LoadRepository uses.

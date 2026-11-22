@@ -173,7 +173,7 @@ func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "repository refused") {
 				t.Fatalf("refusal was not reported: %v", err)
 			}
-			if !reflect.DeepEqual(lc.projects, []string{"p-a"}) || lc.updates != 1 || len(lc.comments) != 1 || len(oc.launches) != 1 || oc.launches[0].Worktree != "path:/a" {
+			if !reflect.DeepEqual(lc.projects, []string{"p-a"}) || lc.updates != 1 || len(lc.comments) != 2 || !strings.HasPrefix(lc.comments[1], "派工档位: ") || len(oc.launches) != 1 || oc.launches[0].Worktree != "path:/a" {
 				t.Fatalf("healthy repository not served: projects=%v updates=%d comments=%v launches=%v", lc.projects, lc.updates, lc.comments, oc.launches)
 			}
 		})

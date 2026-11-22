@@ -185,7 +185,7 @@ func TestFeishuWriteClaimUnconfirmedDoesNotLaunch(t *testing.T) {
 			s := &Scheduler{Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 10, RefillPerSecond: 1}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}, Repositories: []config.Repository{repo}, Backend: r}
 			err = s.Tick(ctx)
 			if settle {
-				if err != nil || base.updates != 1 || base.events != 1 || len(oc.launches) != 1 {
+				if err != nil || base.updates != 1 || base.events != 2 || len(oc.launches) != 1 {
 					t.Fatalf("confirmed claim: err=%v updates=%d events=%d launches=%d", err, base.updates, base.events, len(oc.launches))
 				}
 				return

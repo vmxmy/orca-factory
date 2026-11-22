@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -37,40 +39,65 @@ func modeRuntime(store issues.Store, env map[string]string) *Runtime {
 	return &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 }
 
-func TestClaimRecordsTrackedAgentMode(t *testing.T) {
+func TestLaunchRecordsTrackedAgentMode(t *testing.T) {
+	var created struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(recorded(t, "orca-terminal-create-probe.json"), &created); err != nil {
+		t.Fatal(err)
+	}
+	const handle = "term_4aa07a88-df90-4866-aa2e-dcefaf47537c"
 	for _, tc := range []struct{ name, tracked, disk, want string }{
 		{"tracked auto with manual on disk", "auto", "manual", "auto"},
 		{"tracked manual with auto on disk", "manual", "auto", "manual"},
 		{"tracked default with auto on disk", "", "auto", "manual"},
 	} {
-		for _, kind := range []ActionKind{Claim, Resume} {
-			t.Run(tc.name+"/"+string(kind), func(t *testing.T) {
-				repo := t.TempDir()
-				gates := filepath.Join(repo, "scripts", "agent-gates")
-				if err := os.MkdirAll(gates, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(gates, "agent-graph.env"), []byte("AGENT_MODE="+tc.disk+"\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				env := map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1"}
-				if tc.tracked != "" {
-					env["AGENT_MODE"] = tc.tracked
-				}
-				store := &fakeIssues{issues: []task.Issue{{ID: "id", Identifier: "ENG-1", Project: task.NamedID{ID: "p1"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
-				r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Path: repo, Env: env}}}
-				if err := r.Apply(t.Context(), Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, Action{Kind: kind, Attempt: 1, Phase: machine.PhaseWorker}); err != nil {
-					t.Fatal(err)
-				}
-				if len(store.comments) != 1 || !strings.HasSuffix(store.comments[0], " mode="+tc.want) {
-					t.Fatalf("claim = %q, want mode=%s", store.comments, tc.want)
-				}
-				var claimed Ticket
-				if err := readOwnership(&claimed, evidenceComments(store.comments...)); err != nil || claimed.Owner != machine.OwnerExecutor || claimed.Terminal != "-" || claimed.Attempt != 1 {
-					t.Fatalf("ownership = %+v err=%v", claimed, err)
-				}
-			})
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			gates := filepath.Join(repo, "scripts", "agent-gates")
+			if err := os.MkdirAll(gates, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(gates, "agent-graph.env"), []byte("AGENT_MODE="+tc.disk+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			env := map[string]string{}
+			if tc.tracked != "" {
+				env["AGENT_MODE"] = tc.tracked
+			}
+			comments := evidenceComments("阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=2 scheduler-attempt=2")
+			store := &fakeIssues{issueComments: comments}
+			oc := &runtimeFailureOrca{success: created.Result}
+			r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Path: repo, Env: env}}, Orca: oc, DriverPath: "/driver"}
+			before := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
+			if err := r.Launch(t.Context(), before); err != nil {
+				t.Fatal(err)
+			}
+			if want := "派工档位: term=" + handle + " attempt=2 mode=" + tc.want; len(store.comments) != 1 || store.comments[0] != want {
+				t.Fatalf("receipt = %q, want %q", store.comments, want)
+			}
+			after := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, store.issueComments)
+			if !unregistered(after) || after.Owner != before.Owner || after.Attempt != before.Attempt || after.Phase != before.Phase {
+				t.Fatalf("receipt changed ownership: before=%+v after=%+v", before, after)
+			}
+		})
+	}
+}
+
+type refusedReceiptStore struct{ *fakeIssues }
+
+func (refusedReceiptStore) CreateComment(context.Context, string, string) (task.Comment, error) {
+	return task.Comment{}, errors.New("ledger unavailable")
+}
+
+func TestLaunchWithoutModeReceiptIsNotRetried(t *testing.T) {
+	comments := evidenceComments("阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1")
+	oc := &fakeOrca{}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": refusedReceiptStore{&fakeIssues{issueComments: comments}}}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo"}}, Orca: oc, DriverPath: "/driver"}
+	err := r.Launch(t.Context(), fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, comments))
+	var uncertain *terminalCreateUncertainError
+	if !errors.As(err, &uncertain) || len(oc.launches) != 1 {
+		t.Fatalf("err=%v launches=%d", err, len(oc.launches))
 	}
 }
 

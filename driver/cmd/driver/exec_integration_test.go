@@ -48,6 +48,30 @@ func TestEligibleMode(t *testing.T) {
 	}
 }
 
+func TestRepositoryModeOutsideDiscovery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, tc := range []struct{ name, env, want string }{
+		{"github auto", "AGENT_ISSUE_BACKEND=github\nAGENT_MODE=auto\n", "auto"},
+		{"github default", "AGENT_ISSUE_BACKEND=github\n", "manual"},
+		{"invalid mode", "AGENT_ISSUE_BACKEND=github\nAGENT_MODE=turbo\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			gates := filepath.Join(root, "scripts", "agent-gates")
+			if err := os.MkdirAll(gates, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(gates, "agent-graph.env"), []byte(tc.env), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			mode, err := repositoryMode(t.Context(), root)
+			if mode != tc.want || (err != nil) != (tc.want == "") {
+				t.Fatalf("mode=%q err=%v, want %q", mode, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestExecCompatibility(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

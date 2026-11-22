@@ -53,9 +53,17 @@ func execTicket(args []string) int {
 }
 
 // repositoryMode is the AGENT_MODE of the checkout at root as the scheduler's
-// next discovery would track it. A repository discovery does not take over
-// keeps a mode only the scheduler knows, so it stays unverified here.
+// next discovery would track it. A Feishu repository discovery does not take
+// over keeps a mode only the scheduler knows, so it stays unverified here; the
+// scheduler never tracks another backend, whose profile alone sets the mode.
 func repositoryMode(ctx context.Context, root string) (string, error) {
+	profile, err := config.LoadRepository(root)
+	if err != nil {
+		return "", err
+	}
+	if profile.Env["AGENT_ISSUE_BACKEND"] != "feishu" {
+		return cmp.Or(profile.Env["AGENT_MODE"], "manual"), nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	home, err := os.UserHomeDir()

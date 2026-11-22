@@ -521,7 +521,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if scopeBlocked = scopeBlockedFiles(report.Body, spec); len(scopeBlocked) > 0 {
 				event = machine.EvWorkerScopeBlocked
 				if cp.MergeSpec == "" {
-					mode, modeErr := e.scopeMode(ctx, t, c.Terminal, result.RunID)
+					mode, modeErr := e.scopeMode(ctx, t, c.Terminal)
 					if modeErr != nil {
 						return result, modeErr
 					}
