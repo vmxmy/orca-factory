@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"regexp"
 	"strings"
 	"time"
@@ -98,9 +99,11 @@ type Executor struct {
 	Dispatched bool
 	// LaunchReceipts reports that the ledger proves who wrote an event.
 	LaunchReceipts bool
+	// LaunchTimeout bounds the scheduler's Orca call that creates this terminal.
+	LaunchTimeout time.Duration
 	// VerifyMode reads the repository's current AGENT_MODE for an executor the
 	// scheduler did not dispatch; nil leaves that mode unverified.
-	VerifyMode func(context.Context) (string, error)
+	VerifyMode func(context.Context) (ScopeMode, error)
 	// Stderr receives best-effort structured logs; nil means os.Stderr.
 	Stderr     io.Writer
 	logContext *slog.Logger
@@ -533,9 +536,10 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 					var extended bool
 					var extendErr error
 					switch {
-					case mode == "auto":
-						extended, extendErr = intake.AutoApproveWorkerScope(ctx, e.Issues, t.ID, scopeBlocked, strings.Join(c.Lane3Globs, " "), e.Now())
-					case mode == "manual" && os.Getenv("AGENT_WORKER_AUTO_SCOPE") == "1":
+					case mode.Mode == "auto":
+						lane3 := strings.Join(slices.Concat(c.Lane3Globs, mode.Lane3Globs), " ")
+						extended, extendErr = intake.AutoApproveWorkerScope(ctx, e.Issues, t.ID, scopeBlocked, lane3, e.Now())
+					case mode.Mode == "manual" && os.Getenv("AGENT_WORKER_AUTO_SCOPE") == "1":
 						extended, extendErr = intake.ExtendWorkerScope(ctx, e.Issues, t.ID, t.Scope, scopeBlocked, strings.Join(c.Lane3Globs, " "))
 					}
 					if extendErr != nil {

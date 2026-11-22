@@ -57,28 +57,28 @@ func execTicket(args []string) int {
 // the checkout at root, whose executor is bound to the Feishu ledger. A repository
 // discovery does not take over keeps a mode only the scheduler knows, so it stays
 // unverified here.
-func repositoryMode(ctx context.Context, root string, ledger map[string]string) (string, error) {
+func repositoryMode(ctx context.Context, root string, ledger map[string]string) (executor.ScopeMode, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return executor.ScopeMode{}, err
 	}
 	cfg, err := config.Load(home)
 	if err != nil {
-		return "", err
+		return executor.ScopeMode{}, err
 	}
 	result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
 	if err != nil {
-		return "", err
+		return executor.ScopeMode{}, err
 	}
 	return eligibleMode(result, root, ledger)
 }
 
-func eligibleMode(result projects.Result, root string, ledger map[string]string) (string, error) {
+func eligibleMode(result projects.Result, root string, ledger map[string]string) (executor.ScopeMode, error) {
 	root, err := physicalPath(root)
 	if err != nil {
-		return "", err
+		return executor.ScopeMode{}, err
 	}
 	var matches []config.Repository
 	for _, p := range result.Eligible {
@@ -87,14 +87,14 @@ func eligibleMode(result projects.Result, root string, ledger map[string]string)
 		}
 	}
 	if len(matches) != 1 {
-		return "", fmt.Errorf("repository is taken over at %d registered paths, want one", len(matches))
+		return executor.ScopeMode{}, fmt.Errorf("repository is taken over at %d registered paths, want one", len(matches))
 	}
 	for _, key := range config.LedgerIdentityKeys {
 		if matches[0].Env[key] != ledger[key] {
-			return "", fmt.Errorf("%s no longer names the bound ledger", key)
+			return executor.ScopeMode{}, fmt.Errorf("%s no longer names the bound ledger", key)
 		}
 	}
-	return cmp.Or(matches[0].Env["AGENT_MODE"], "manual"), nil
+	return executor.ScopeMode{Mode: cmp.Or(matches[0].Env["AGENT_MODE"], "manual"), Lane3Globs: strings.Fields(matches[0].Env["AGENT_LANE3_GLOBS"])}, nil
 }
 
 var logComponent = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)

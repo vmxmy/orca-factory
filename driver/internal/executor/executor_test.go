@@ -397,7 +397,7 @@ func TestWorkerScopeBlockedSafeFilesExtendScope(t *testing.T) {
 			store := &scopeIssues{budgetIssues: ledger, description: "## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"}
 			e.Issues = store
 			e.Dispatched, e.LaunchReceipts = true, true
-			ledger.comments = []string{launchReceipt("manual")}
+			ledger.comments = []string{modeReceipt("manual")}
 			e.Config.Lane3Globs = strings.Fields(tc.lane3)
 			o.failFirst = true
 			o.failBody = "SCOPE-BLOCKED: " + tc.files

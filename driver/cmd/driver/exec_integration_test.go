@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestEligibleMode(t *testing.T) {
 	}
 	ledger := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": "host/one"}
 	project := func(path, mode string) projects.Project {
-		env := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": "host/one"}
+		env := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": "host/one", "AGENT_LANE3_GLOBS": ".env* *secrets*"}
 		if mode != "" {
 			env["AGENT_MODE"] = mode
 		}
@@ -48,8 +49,8 @@ func TestEligibleMode(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mode, err := eligibleMode(tc.result, root, ledger)
-			if mode != tc.want || (err != nil) != (tc.want == "") {
-				t.Fatalf("mode=%q err=%v, want %q", mode, err, tc.want)
+			if mode.Mode != tc.want || (err != nil) != (tc.want == "") || err == nil && !slices.Equal(mode.Lane3Globs, []string{".env*", "*secrets*"}) {
+				t.Fatalf("mode=%+v err=%v, want %q", mode, err, tc.want)
 			}
 		})
 	}

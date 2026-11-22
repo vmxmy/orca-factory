@@ -97,7 +97,7 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
 			e, o, tools, recovery, ledger, ticket := recoveryFixture(t)
 			e.Dispatched, e.LaunchReceipts = true, true
-			ledger.comments = []string{launchReceipt(tc.mode)}
+			ledger.comments = []string{modeReceipt(tc.mode)}
 			ticket.Scope = "unit/change.go"
 			face := "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
 			store := &scopeIssues{budgetIssues: ledger, description: face}
@@ -141,7 +141,7 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 	}
 }
 
-func launchReceipt(mode string) string {
+func modeReceipt(mode string) string {
 	return "派工档位: term=term_exec attempt=1 mode=" + mode
 }
 
@@ -150,19 +150,21 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 	const claim = "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1 since=2026-10-05T05:59:00Z"
 	approvals := []string{"扩SCOPE：auto 2026-11-21T00:00:00Z", "扩SCOPE：worker-auto 2026-11-21T01:00:00Z"}
 	launched := func(mode string, more ...string) []string {
-		return append([]string{claim, launchReceipt(mode)}, more...)
+		return append([]string{claim, modeReceipt(mode)}, more...)
 	}
 	const registered = "阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_one attempt=1 since=2026-10-05T05:59:30Z"
 	otherTerminal := "派工档位: term=term_other attempt=1 mode=auto"
-	verified := func(mode string) func(context.Context) (string, error) {
-		return func(context.Context) (string, error) { return mode, nil }
+	verified := func(mode string, lane3 ...string) func(context.Context) (ScopeMode, error) {
+		return func(context.Context) (ScopeMode, error) { return ScopeMode{Mode: mode, Lane3Globs: lane3}, nil }
 	}
-	unverified := func(context.Context) (string, error) { return "", errors.New("repository is not taken over") }
+	unverified := func(context.Context) (ScopeMode, error) {
+		return ScopeMode{}, errors.New("repository is not taken over")
+	}
 	const autoRule, whitelist, resolver = "扩SCOPE：worker-auto ", "自动扩 SCOPE：", ""
 	for _, tc := range []struct {
 		name     string
 		comments []string
-		verify   func(context.Context) (string, error)
+		verify   func(context.Context) (ScopeMode, error)
 		operator bool
 		files    string
 		want     string
@@ -171,11 +173,12 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 		{"dispatched auto after two approvals", launched("auto", approvals...), verified("manual"), false, sibling, resolver},
 		{"dispatched manual outranks checkout", launched("manual"), verified("auto"), false, sibling, whitelist},
 		{"dispatched manual rejects auto paths", launched("manual"), verified("auto"), false, docs, resolver},
-		{"relaunch replaces the failed launch", []string{claim, otherTerminal, launchReceipt("manual")}, verified("auto"), false, docs, resolver},
+		{"relaunch replaces the failed launch", []string{claim, otherTerminal, modeReceipt("manual")}, verified("auto"), false, docs, resolver},
 		{"dispatched without receipt", []string{claim}, verified("auto"), false, docs, resolver},
 		{"dispatched with another terminal's receipt", []string{claim, otherTerminal}, verified("auto"), false, sibling, resolver},
 		{"dispatched twice in one terminal", launched("auto", registered), verified("auto"), false, docs, resolver},
 		{"operator start in auto repository", nil, verified("auto"), true, docs, autoRule},
+		{"operator start meets current lane three", nil, verified("auto", "docs/*"), true, docs, resolver},
 		{"operator start in auto repository after two approvals", approvals, verified("auto"), true, sibling, resolver},
 		{"operator start in manual repository keeps whitelist", nil, verified("manual"), true, sibling, whitelist},
 		{"operator start in manual repository rejects auto paths", nil, verified("manual"), true, docs, resolver},
@@ -226,11 +229,12 @@ func TestWorkerScopeBlockedAwaitsLaunchReceipt(t *testing.T) {
 	t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
 	e, o, _, _, ledger, ticket := recoveryFixture(t)
 	e.Dispatched, e.LaunchReceipts = true, true
-	waits := 0
+	e.LaunchTimeout = 15 * time.Minute
+	waited := time.Duration(0)
 	e.Sleep = func(_ context.Context, wait time.Duration) error {
 		if wait == launchReceiptInterval {
-			if waits++; waits == launchReceiptReads-1 {
-				ledger.comments = append(ledger.comments, launchReceipt("auto"))
+			if waited += wait; waited == e.LaunchTimeout+launchReceiptMargin {
+				ledger.comments = append(ledger.comments, modeReceipt("auto"))
 			}
 		}
 		return nil
@@ -260,6 +264,7 @@ func TestBindModeFollowsTheBoundLedger(t *testing.T) {
 		{"github operator auto", github + "AGENT_MODE=auto\n", github + "AGENT_MODE=auto\n", false, "auto"},
 		{"github operator empty mode", github, github + "AGENT_MODE=\n", false, ""},
 		{"github operator moved instance", github, github + "AGENT_GH_API_URL=https://other.example/api\nAGENT_MODE=auto\n", false, ""},
+		{"github operator ignores feishu fields", github, github + "AGENT_FEISHU_PROJECT=host/two\n", false, "manual"},
 		{"github operator moved backend", github, "AGENT_ISSUE_BACKEND=feishu\nAGENT_GH_REPO=owner/repo\nAGENT_MODE=auto\n", false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -282,16 +287,16 @@ func TestBindModeFollowsTheBoundLedger(t *testing.T) {
 			write(tc.approval)
 			e, _, _, _, ledger, ticket := recoveryFixture(t)
 			e.Issues = &scopeIssues{budgetIssues: ledger}
-			ledger.comments = []string{launchReceipt("auto"), "归属: 执行器 term=term_exec run=run_one attempt=1"}
+			ledger.comments = []string{modeReceipt("auto"), "归属: 执行器 term=term_exec run=run_one attempt=1"}
 			e.Dispatched = tc.dispatched
-			e.bindMode(repo, bound, func(_ context.Context, path string, env map[string]string) (string, error) {
+			e.bindMode(repo, bound, func(_ context.Context, path string, env map[string]string) (ScopeMode, error) {
 				if path != repo || !reflect.DeepEqual(env, bound) {
 					t.Fatalf("verified %q %v", path, env)
 				}
-				return "discovered", nil
+				return ScopeMode{Mode: "discovered"}, nil
 			})
-			if mode, err := e.scopeMode(t.Context(), ticket, "term_exec"); err != nil || mode != tc.want {
-				t.Fatalf("mode=%q err=%v, want %q", mode, err, tc.want)
+			if mode, err := e.scopeMode(t.Context(), ticket, "term_exec"); err != nil || mode.Mode != tc.want {
+				t.Fatalf("mode=%+v err=%v, want %q", mode, err, tc.want)
 			}
 		})
 	}
@@ -311,7 +316,13 @@ func TestLaunchedModeTrustsOnlyDriverReceipts(t *testing.T) {
 	const terminal = "term_fdf45555-3378-4ca8-99b1-6200fc3106fc"
 	const registration = "归属: 执行器 term=" + terminal + " run=run_c2d32709f17c attempt=1"
 	history := envelope.Data.Issue.Comments.Nodes
-	event := func(source, body string) task.Comment { return task.Comment{Source: source, Body: body} }
+	launched := time.Date(2026, 10, 5, 14, 8, 36, 0, time.UTC)
+	event := func(source, body string) task.Comment {
+		return task.Comment{Source: source, Body: body, CreatedAt: launched}
+	}
+	later := func(body string) task.Comment {
+		return task.Comment{Source: task.SourceDriver, Body: body, CreatedAt: launched.Add(time.Minute)}
+	}
 	receipt := "派工档位: term=" + terminal + " attempt=1 mode=auto"
 	for _, tc := range []struct {
 		name   string
@@ -325,6 +336,10 @@ func TestLaunchedModeTrustsOnlyDriverReceipts(t *testing.T) {
 		{"quoted in another event", []task.Comment{event(task.SourceDriver, "阶段: gate\n"+receipt)}, ""},
 		{"another terminal", []task.Comment{event(task.SourceDriver, "派工档位: term=term_other attempt=1 mode=auto")}, ""},
 		{"unknown mode", []task.Comment{event(task.SourceDriver, "派工档位: term="+terminal+" attempt=1 mode=turbo")}, ""},
+		{"claimed again", []task.Comment{event(task.SourceDriver, receipt), later("阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=2 scheduler-attempt=2")}, ""},
+		{"launched again", []task.Comment{event(task.SourceDriver, receipt), later("派工档位: term=term_other attempt=2 mode=manual")}, ""},
+		{"released", []task.Comment{event(task.SourceDriver, receipt), later("阶段: 待领\n归属: 无")}, ""},
+		{"earlier launch", []task.Comment{{Source: task.SourceDriver, Body: "派工档位: term=term_other attempt=1 mode=manual", CreatedAt: launched.Add(-time.Minute)}, event(task.SourceDriver, receipt)}, "auto"},
 		{"registered twice", []task.Comment{event(task.SourceDriver, receipt), event(task.SourceDriver, registration)}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
