@@ -21,6 +21,9 @@ func TestExecCompatibility(t *testing.T) {
 		{"empty", []string{"exec"}, 2, "unknown"},
 		{"ordinary", []string{"exec", "ENG-1"}, 1, "ENG-1"},
 		{"merging", []string{"exec", "--merging", "ENG-1"}, 1, "ENG-1"},
+		{"auto", []string{"exec", "--auto", "ENG-1"}, 1, "ENG-1"},
+		{"merging auto", []string{"exec", "--merging", "--auto", "ENG-1"}, 1, "ENG-1"},
+		{"auto missing ticket", []string{"exec", "--auto"}, 2, "unknown"},
 		{"missing ticket", []string{"exec", "--merging"}, 2, "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -701,7 +701,11 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	if r.orcaFailures >= orcaRuntimeFailureThreshold {
 		return &terminalCreateRuntimeError{err: errOrcaRuntimePaused, ticket: t, failures: r.orcaFailures}
 	}
-	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
+	mode := ""
+	if verb != " resolve " && autoMode(r.Repositories[t.Repo].Env) {
+		mode = "--auto "
+	}
+	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + mode + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
 		var rejected *orca.RejectedError
 		if errors.As(err, &rejected) && rejected.Code == "runtime_error" {
