@@ -241,23 +241,12 @@ func launchedMode(comments []task.Comment, terminal string) (mode ScopeMode, pen
 				receipts += 2
 			}
 		}
-		if !comment.CarriesProtocol() {
-			continue
+		registered, foreign := ownershipEvent(comment, own)
+		if registered {
+			registrations++
 		}
-		if strings.HasPrefix(comment.Body, "转人: ") && receipts+registrations > 0 {
+		if foreign && receipts+registrations > 0 {
 			return ScopeMode{}, false, errLaunchSuperseded
-		}
-		for _, line := range strings.Split(comment.Body, "\n") {
-			ownership, ok := strings.CutPrefix(line, "归属: ")
-			if !ok {
-				continue
-			}
-			words := strings.Fields(ownership)
-			if len(words) > 0 && words[0] == string(machine.OwnerExecutor) && slices.Contains(words, own) {
-				registrations++
-			} else if receipts+registrations > 0 {
-				return ScopeMode{}, false, errLaunchSuperseded
-			}
 		}
 	}
 	if registrations > 1 || receipts > 1 {
@@ -266,18 +255,52 @@ func launchedMode(comments []task.Comment, terminal string) (mode ScopeMode, pen
 	return mode, receipts == 0 || registrations == 0, nil
 }
 
-// launchOwned refuses a ledger snapshot in which a dispatched executor lost the ticket.
-func (e *Executor) launchOwned(terminal string) func([]task.Comment) error {
-	return func(comments []task.Comment) error {
-		if !e.Launch.Dispatched {
-			return nil
+// ownershipEvent reports that an event registers this terminal's executor, or
+// hands the ticket to anyone else.
+func ownershipEvent(comment task.Comment, own string) (registered, foreign bool) {
+	if !comment.CarriesProtocol() {
+		return false, false
+	}
+	foreign = strings.HasPrefix(comment.Body, "转人: ")
+	for _, line := range strings.Split(comment.Body, "\n") {
+		ownership, ok := strings.CutPrefix(line, "归属: ")
+		if !ok {
+			continue
 		}
-		_, _, err := launchedMode(comments, terminal)
-		return err
+		words := strings.Fields(ownership)
+		if len(words) > 0 && words[0] == string(machine.OwnerExecutor) && slices.Contains(words, own) {
+			registered = true
+		} else {
+			foreign = true
+		}
+	}
+	return registered, foreign
+}
+
+// autoOwned rechecks, on the snapshot an approval decides on, that this executor
+// still owns the ticket and that the snapshot still grants a dispatched one auto.
+func (e *Executor) autoOwned(terminal string) func([]task.Comment) (bool, error) {
+	return func(comments []task.Comment) (bool, error) {
+		if e.Launch.Dispatched {
+			mode, _, err := launchedMode(comments, terminal)
+			return mode.Mode == "auto", err
+		}
+		comments = slices.Clone(comments)
+		sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
+		held, lost := false, false
+		for _, comment := range comments {
+			registered, foreign := ownershipEvent(comment, "term="+terminal)
+			held = held || registered
+			lost = foreign || lost && !registered
+		}
+		if held && lost {
+			return false, errLaunchSuperseded
+		}
+		return true, nil
 	}
 }
 
-var errLaunchSuperseded = errors.New("executor launch superseded; ticket no longer owned by this terminal")
+var errLaunchSuperseded = errors.New("ticket no longer owned by this executor terminal")
 
 // LaunchModePrefix starts the scheduler's receipt that binds the AGENT_MODE it
 // tracked at launch to the executor terminal it created.

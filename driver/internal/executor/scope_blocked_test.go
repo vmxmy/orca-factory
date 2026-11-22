@@ -251,6 +251,36 @@ func TestWorkerScopeBlockedAwaitsLaunchReceipt(t *testing.T) {
 	}
 }
 
+func TestAutoOwnedRechecksTheApprovalSnapshot(t *testing.T) {
+	const registered, claimed, human = "归属: 执行器 term=term_exec run=run_one attempt=1", "归属: 执行器 term=- run=- attempt=2", "转人: 人工接手"
+	for _, tc := range []struct {
+		name       string
+		dispatched bool
+		bodies     []string
+		ok, lost   bool
+	}{
+		{"operator registered", false, []string{claimed, registered}, true, false},
+		{"operator handed to a human", false, []string{registered, human}, false, true},
+		{"operator superseded", false, []string{registered, claimed}, false, true},
+		{"operator restarted after release", false, []string{registered, "归属: 无", registered}, true, false},
+		{"dispatched", true, []string{claimed, modeReceipt("auto"), registered}, true, false},
+		{"dispatched registered twice", true, []string{modeReceipt("auto"), registered, registered}, false, false},
+		{"dispatched handed to a human", true, []string{modeReceipt("auto"), registered, human}, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var comments []task.Comment
+			for _, body := range tc.bodies {
+				comments = append(comments, task.Comment{Source: task.SourceDriver, Body: body})
+			}
+			e := &Executor{Launch: Launch{Dispatched: tc.dispatched}}
+			ok, err := e.autoOwned("term_exec")(comments)
+			if ok != tc.ok || errors.Is(err, errLaunchSuperseded) != tc.lost || err != nil && !tc.lost {
+				t.Fatalf("ok=%v err=%v", ok, err)
+			}
+		})
+	}
+}
+
 func TestScopeModeRereadsLane3ForADispatchedApproval(t *testing.T) {
 	for _, tc := range []struct {
 		name string

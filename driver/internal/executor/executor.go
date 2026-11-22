@@ -538,7 +538,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 					switch {
 					case mode.Mode == "auto":
 						lane3 := strings.Join(slices.Concat(c.Lane3Globs, mode.Lane3Globs), " ")
-						extended, extendErr = intake.AutoApproveWorkerScope(ctx, e.Issues, t.ID, scopeBlocked, lane3, e.Now(), e.launchOwned(c.Terminal))
+						extended, extendErr = intake.AutoApproveWorkerScope(ctx, e.Issues, t.ID, scopeBlocked, lane3, e.Now(), e.autoOwned(c.Terminal))
 					case mode.Mode == "manual" && os.Getenv("AGENT_WORKER_AUTO_SCOPE") == "1":
 						extended, extendErr = intake.ExtendWorkerScope(ctx, e.Issues, t.ID, t.Scope, scopeBlocked, strings.Join(c.Lane3Globs, " "))
 					}

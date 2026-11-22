@@ -141,15 +141,17 @@ func TestRecordedAutoScopeApprovalCount(t *testing.T) {
 	}
 }
 
-func stillOwned([]task.Comment) error { return nil }
+func stillOwned([]task.Comment) (bool, error) { return true, nil }
 
 func TestWorkerAutoScopeRefusesLostTicket(t *testing.T) {
 	h := scopedTicket(t, `{"action":"escalate","class":"scope-extension","reason":"scope","body":"proof","scope":["resolver.go"]}`)
 	lost := errors.New("ticket lost")
 	for _, path := range []string{"docs/system-manual.md", "core/gate.sh"} {
-		approved, err := AutoApproveWorkerScope(t.Context(), h.ledger, "OF-12", []string{path}, "", h.g.now(), func([]task.Comment) error { return lost })
-		if approved || !errors.Is(err, lost) || len(h.ledger.edits) != 0 {
-			t.Fatalf("path=%s approved=%v err=%v edits=%q", path, approved, err, h.ledger.edits)
+		for _, want := range []error{lost, nil} {
+			approved, err := AutoApproveWorkerScope(t.Context(), h.ledger, "OF-12", []string{path}, "", h.g.now(), func([]task.Comment) (bool, error) { return false, want })
+			if approved || !errors.Is(err, want) || len(h.ledger.edits) != 0 {
+				t.Fatalf("path=%s approved=%v err=%v edits=%q", path, approved, err, h.ledger.edits)
+			}
 		}
 	}
 }

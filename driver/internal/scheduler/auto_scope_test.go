@@ -210,7 +210,7 @@ func TestWorkerAutoScopeAuditPreservesOwnershipAndResolution(t *testing.T) {
 	if err != nil || before.Owner != machine.OwnerExecutor || before.Phase != machine.PhaseWorker || before.Terminal != "term_one" || resolution == nil || resolution.Phase != "applied" || !resolution.TopUsed {
 		t.Fatalf("invalid baseline evidence: ticket=%+v resolution=%+v err=%v", before, resolution, err)
 	}
-	approved, err := intake.AutoApproveWorkerScope(context.Background(), store, "id", []string{"docs/system-manual.md"}, "", time.Now(), func([]task.Comment) error { return nil })
+	approved, err := intake.AutoApproveWorkerScope(context.Background(), store, "id", []string{"docs/system-manual.md"}, "", time.Now(), func([]task.Comment) (bool, error) { return true, nil })
 	if err != nil || !approved {
 		t.Fatalf("approved=%v err=%v", approved, err)
 	}
