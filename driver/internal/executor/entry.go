@@ -3,6 +3,7 @@ package executor
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
@@ -105,12 +106,9 @@ func RunTicket(ctx context.Context, identifier string, merging bool, launch Laun
 // Feishu ledger proves who wrote an event, and the scheduler tracks no other
 // backend, whose mode therefore comes from the profile alone.
 func (e *Executor) bindMode(repo string, ledger map[string]string, verify func(context.Context, string, map[string]string) (ScopeMode, error)) {
-	e.CurrentLane3 = func(ctx context.Context) ([]string, error) {
-		current, _, err := repositoryExecutor(ctx, repo)
-		return current.Config.Lane3Globs, err
-	}
 	if ledger["AGENT_ISSUE_BACKEND"] == "feishu" {
 		e.LaunchReceipts = true
+		e.TrackedLane3 = func() ([]string, error) { return readTrackedLane3(e.Config.Root, repo) }
 		e.VerifyMode = func(ctx context.Context) (ScopeMode, error) { return verify(ctx, repo, ledger) }
 		return
 	}
@@ -158,20 +156,34 @@ type ScopeMode struct {
 // executor takes the scheduler's launch receipt and nothing else; any other
 // start verifies the repository's current mode.
 func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (ScopeMode, error) {
+	mode, err := e.governingMode(ctx, t, terminal)
+	if err != nil || mode.Mode != "auto" || e.TrackedLane3 == nil {
+		return mode, err
+	}
+	tracked, err := e.TrackedLane3()
+	if err != nil {
+		e.warn("%s tracked lane 3 globs unverified: %s", t.Identifier, logErrorSummary(err))
+		return ScopeMode{}, nil
+	}
+	return ScopeMode{Mode: mode.Mode, Lane3Globs: slices.Concat(mode.Lane3Globs, tracked)}, nil
+}
+
+func (e *Executor) governingMode(ctx context.Context, t Ticket, terminal string) (ScopeMode, error) {
 	if e.Launch.Dispatched {
-		mode, err := e.awaitLaunchedMode(ctx, t, terminal)
-		if err != nil || mode.Mode != "auto" || e.CurrentLane3 == nil {
-			return mode, err
-		}
-		current, err := e.CurrentLane3(ctx)
-		if err != nil {
-			e.warn("%s lane 3 globs unverified: %s", t.Identifier, logErrorSummary(err))
-			return ScopeMode{}, nil
-		}
-		return ScopeMode{Mode: mode.Mode, Lane3Globs: slices.Concat(mode.Lane3Globs, current)}, nil
+		return e.awaitLaunchedMode(ctx, t, terminal)
 	}
 	if e.VerifyMode == nil {
 		return ScopeMode{}, nil
+	}
+	err := e.pollLedger(ctx, t, launchReceiptMargin, func(comments []task.Comment) (bool, error) {
+		return operatorOwned(comments, terminal)
+	})
+	if errors.Is(err, errLedgerPending) {
+		e.warn("%s registration of terminal %s not visible", t.Identifier, terminal)
+		return ScopeMode{}, nil
+	}
+	if err != nil {
+		return ScopeMode{}, err
 	}
 	current, err := e.VerifyMode(ctx)
 	if err != nil {
@@ -179,6 +191,53 @@ func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (Sc
 		return ScopeMode{}, nil
 	}
 	return current, nil
+}
+
+// PublishTrackedLane3 records the lane 3 globs the scheduler applies to the
+// repository at path, so its executors never approve what the resolver stage
+// refuses. It only narrows approvals; a failed write leaves them unverified.
+func PublishTrackedLane3(root, path string, globs []string) error {
+	file, err := trackedLane3Path(root, path)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(file+".new", []byte(strings.Join(globs, " ")), 0o600); err != nil {
+		return errors.Join(err, removeIfExists(file))
+	}
+	if err := os.Rename(file+".new", file); err != nil {
+		return errors.Join(err, removeIfExists(file))
+	}
+	return nil
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func readTrackedLane3(root, path string) ([]string, error) {
+	file, err := trackedLane3Path(root, path)
+	if err != nil {
+		return nil, err
+	}
+	globs, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(globs)), nil
+}
+
+func trackedLane3Path(root, path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "tracked-lane3", fmt.Sprintf("%x", sha256.Sum256([]byte(resolved)))), nil
 }
 
 // The scheduler can only write the receipt after Orca returns the terminal, so a
@@ -189,10 +248,26 @@ const (
 	launchReceiptInterval = 10 * time.Second
 )
 
-func (e *Executor) awaitLaunchedMode(ctx context.Context, t Ticket, terminal string) (ScopeMode, error) {
+func (e *Executor) awaitLaunchedMode(ctx context.Context, t Ticket, terminal string) (mode ScopeMode, err error) {
 	if !e.LaunchReceipts {
 		return ScopeMode{}, nil
 	}
+	err = e.pollLedger(ctx, t, e.Launch.CallTimeout+launchReceiptMargin, func(comments []task.Comment) (bool, error) {
+		var pending bool
+		mode, pending, err = launchedMode(comments, terminal)
+		return !pending, err
+	})
+	if errors.Is(err, errLedgerPending) {
+		e.warn("%s launch mode receipt missing for terminal %s", t.Identifier, terminal)
+		return ScopeMode{}, nil
+	}
+	return mode, err
+}
+
+var errLedgerPending = errors.New("ledger event not visible")
+
+// pollLedger rereads the ticket's events until settled or limit has passed.
+func (e *Executor) pollLedger(ctx context.Context, t Ticket, limit time.Duration, settled func([]task.Comment) (bool, error)) error {
 	wait := e.Sleep
 	if wait == nil {
 		wait = pause
@@ -200,18 +275,16 @@ func (e *Executor) awaitLaunchedMode(ctx context.Context, t Ticket, terminal str
 	for waited := time.Duration(0); ; waited += launchReceiptInterval {
 		comments, err := e.Issues.ListComments(ctx, t.ID)
 		if err != nil {
-			return ScopeMode{}, safeDependencyError(err)
+			return safeDependencyError(err)
 		}
-		mode, pending, err := launchedMode(comments, terminal)
-		if err != nil || !pending {
-			return mode, err
+		if done, err := settled(comments); err != nil || done {
+			return err
 		}
-		if waited >= e.Launch.CallTimeout+launchReceiptMargin {
-			e.warn("%s launch mode receipt missing for terminal %s", t.Identifier, terminal)
-			return ScopeMode{}, nil
+		if waited >= limit {
+			return errLedgerPending
 		}
 		if err := wait(ctx, launchReceiptInterval); err != nil {
-			return ScopeMode{}, err
+			return err
 		}
 	}
 }
@@ -226,17 +299,16 @@ func launchedMode(comments []task.Comment, terminal string) (mode ScopeMode, pen
 	receipts, registrations, own := 0, 0, "term="+terminal
 	for _, comment := range comments {
 		if receipt, ok := strings.CutPrefix(comment.Body, LaunchModePrefix); ok && comment.Source == task.SourceDriver {
-			head, lane3, _ := strings.Cut(receipt, "\n"+LaunchLane3Prefix)
-			words := strings.Fields(head)
+			words := strings.Fields(receipt)
 			switch {
 			case !slices.Contains(words, own):
 				if receipts+registrations > 0 {
 					return ScopeMode{}, false, errLaunchSuperseded
 				}
 			case slices.Contains(words, "mode=auto"):
-				receipts, mode = receipts+1, ScopeMode{Mode: "auto", Lane3Globs: strings.Fields(lane3)}
+				receipts, mode = receipts+1, ScopeMode{Mode: "auto"}
 			case slices.Contains(words, "mode=manual"):
-				receipts, mode = receipts+1, ScopeMode{Mode: "manual", Lane3Globs: strings.Fields(lane3)}
+				receipts, mode = receipts+1, ScopeMode{Mode: "manual"}
 			default:
 				receipts += 2
 			}
@@ -282,33 +354,35 @@ func ownershipEvent(comment task.Comment, own string) (registered, foreign bool)
 func (e *Executor) autoOwned(terminal string) func([]task.Comment) (bool, error) {
 	return func(comments []task.Comment) (bool, error) {
 		if e.Launch.Dispatched {
-			mode, _, err := launchedMode(comments, terminal)
-			return mode.Mode == "auto", err
+			mode, pending, err := launchedMode(comments, terminal)
+			return mode.Mode == "auto" && !pending, err
 		}
-		comments = slices.Clone(comments)
-		sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
-		held, lost := false, false
-		for _, comment := range comments {
-			registered, foreign := ownershipEvent(comment, "term="+terminal)
-			held = held || registered
-			lost = foreign || lost && !registered
-		}
-		if held && lost {
-			return false, errLaunchSuperseded
-		}
-		return true, nil
+		return operatorOwned(comments, terminal)
 	}
+}
+
+// operatorOwned reports that this terminal's latest registration still holds the
+// ticket, false while no registration is visible.
+func operatorOwned(comments []task.Comment, terminal string) (bool, error) {
+	comments = slices.Clone(comments)
+	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
+	held, lost := false, false
+	for _, comment := range comments {
+		registered, foreign := ownershipEvent(comment, "term="+terminal)
+		held = held || registered
+		lost = foreign || lost && !registered
+	}
+	if held && lost {
+		return false, errLaunchSuperseded
+	}
+	return held, nil
 }
 
 var errLaunchSuperseded = errors.New("ticket no longer owned by this executor terminal")
 
 // LaunchModePrefix starts the scheduler's receipt that binds the AGENT_MODE it
 // tracked at launch to the executor terminal it created.
-const (
-	LaunchModePrefix = "派工档位: "
-	// LaunchLane3Prefix starts its second line, the lane 3 globs tracked with it.
-	LaunchLane3Prefix = "lane3: "
-)
+const LaunchModePrefix = "派工档位: "
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and
 // applies the machine profile through the same function LoadRepository uses.
