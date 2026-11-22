@@ -106,12 +106,12 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
 	// Only selected, noncredential fields leave this subprocess.
-	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "$AGENT_ROLE_REVIEWER" "$AGENT_ROLE_REVIEWER_CMD_SMALL" "$AGENT_ROLE_REVIEWER_SMALL" "$AGENT_ROLE_SECOND_REVIEWER_CMD" "$AGENT_ROLE_SECOND_REVIEWER" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}" "${AGENT_WORKER_SKILLS:-}"; for k in $(compgen -v AGENT_TIER_) $(compgen -v AGENT_ROLE_REVIEWER); do printf '%s\0' "$k" "${!k}"; done`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "$AGENT_ROLE_REVIEWER" "$AGENT_ROLE_REVIEWER_CMD_SMALL" "$AGENT_ROLE_REVIEWER_SMALL" "$AGENT_ROLE_SECOND_REVIEWER_CMD" "$AGENT_ROLE_SECOND_REVIEWER" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}" "${AGENT_WORKER_SKILLS:-}" "${AGENT_MODE:-manual}"; for k in $(compgen -v AGENT_TIER_) $(compgen -v AGENT_ROLE_REVIEWER); do printf '%s\0' "$k" "${!k}"; done`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) < 20 || len(values)%2 != 0 {
+	if len(values) < 21 || len(values)%2 != 1 {
 		return Executor{}, nil, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
@@ -130,9 +130,9 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		"AGENT_TIER_DEFAULT": values[7], "AGENT_TIER_STRONG": values[8], "AGENT_TIER_ESCALATE": values[9],
 		"AGENT_REVIEWER_SMALL_MAX_ESTIMATE": values[10], "AGENT_LANE3_GLOBS": values[11], "AGENT_ISSUE_BACKEND": values[12],
 		"AGENT_GH_API_URL": values[13], "AGENT_FEISHU_BASE": values[14], "AGENT_FEISHU_PROJECT": values[15],
-		"AGENT_INSTALL_CMD": values[16], "AGENT_PROFILE": values[17], "AGENT_WORKER_SKILLS": values[18],
+		"AGENT_INSTALL_CMD": values[16], "AGENT_PROFILE": values[17], "AGENT_WORKER_SKILLS": values[18], "AGENT_MODE": values[19],
 	}
-	for i := 19; i+1 < len(values); i += 2 {
+	for i := 20; i+1 < len(values); i += 2 {
 		if _, fixed := sourced[values[i]]; !fixed {
 			sourced[values[i]] = values[i+1]
 		}
@@ -196,7 +196,7 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 			}
 		}
 	}
-	cfg := Config{Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
+	cfg := Config{Mode: effective("AGENT_MODE"), Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
 		Agent: entry.Agent, Model: entry.Model, Effort: entry.Effort, Escalate: escalate,
 		TierSettings: settings, TierChain: chain, WorkerSkills: workerSkills, Lane3Globs: strings.Fields(values[11])}
 	if cfg.Model == "" {

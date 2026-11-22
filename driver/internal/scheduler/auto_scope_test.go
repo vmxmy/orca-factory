@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
@@ -194,5 +196,30 @@ func TestAutoReleaseBeforeHumanCard(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWorkerAutoScopeAuditPreservesOwnershipAndResolution(t *testing.T) {
+	store := &scopeStore{face: "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go\n"}
+	store.issueComments = evidenceComments("阶段: worker 运行中\n归属: 执行器 term=term_one run=run_one attempt=2", `resolver-state {"version":1,"attempt":3,"phase":"applied","top_used":true}`)
+	before := Ticket{}
+	if err := readOwnership(&before, store.issueComments); err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := readResolution(store.issueComments)
+	if err != nil || before.Owner != machine.OwnerExecutor || before.Phase != machine.PhaseWorker || before.Terminal != "term_one" || resolution == nil || resolution.Phase != "applied" || !resolution.TopUsed {
+		t.Fatalf("invalid baseline evidence: ticket=%+v resolution=%+v err=%v", before, resolution, err)
+	}
+	approved, err := intake.AutoApproveWorkerScope(context.Background(), store, "id", []string{"docs/system-manual.md"}, "", time.Now())
+	if err != nil || !approved {
+		t.Fatalf("approved=%v err=%v", approved, err)
+	}
+	after := Ticket{}
+	if err := readOwnership(&after, store.issueComments); err != nil {
+		t.Fatal(err)
+	}
+	afterResolution, err := readResolution(store.issueComments)
+	if err != nil || !reflect.DeepEqual(before, after) || !reflect.DeepEqual(resolution, afterResolution) || len(store.issueComments) != 3 {
+		t.Fatalf("audit changed ledger interpretation: before=%+v after=%+v resolution=%+v afterResolution=%+v err=%v", before, after, resolution, afterResolution, err)
 	}
 }

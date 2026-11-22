@@ -295,3 +295,25 @@ func TestCorrectionTierFollowsChain(t *testing.T) {
 		})
 	}
 }
+
+func TestExecReadsRepositoryAgentMode(t *testing.T) {
+	for _, mode := range []string{"auto", "manual"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("AGENT_MODE", "auto")
+			repo := t.TempDir()
+			path := filepath.Join(repo, "scripts/agent-gates/agent-graph.env")
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			body := "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD=review\nAGENT_TIER_DEFAULT=codex::low\nAGENT_MODE=" + mode + "\n"
+			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			e, _, err := repositoryExecutor(context.Background(), repo)
+			if err != nil || e.Config.Mode != mode {
+				t.Fatalf("mode=%q want=%q err=%v", e.Config.Mode, mode, err)
+			}
+		})
+	}
+}

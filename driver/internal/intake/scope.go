@@ -125,24 +125,9 @@ func autoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attemp
 	if refusal != "" {
 		return refusal, nil
 	}
-	if len(paths) > 10 {
-		return "申请超过 10 个路径", nil
-	}
-	for _, path := range paths {
-		for _, glob := range []string{".github", ".github/*", "core/gate.sh", "scripts/agent-gates/gate*.sh", "scripts/agent-gates/agent-graph.env", "driver/deploy", "driver/deploy/*", "Makefile", ".env*", "*/.env*", "*secrets*"} {
-			if task.ScopeMatch(glob, path) {
-				return "路径 " + path + " 属于流水线控制文件", nil
-			}
-		}
-	}
-	approvals := 0
-	for _, comment := range comments {
-		if strings.HasPrefix(comment.Body, "扩SCOPE：auto ") || strings.HasPrefix(comment.Body, "扩SCOPE：top-resolver ") {
-			approvals++
-		}
-	}
-	if approvals >= 2 {
-		return "每张票自动批准已达 2 次", nil
+	approvals, refusal := autoScopeApproval(paths, comments, lane3Globs)
+	if refusal != "" {
+		return refusal, nil
 	}
 	conditions := fmt.Sprintf("AGENT_AUTO_REVIEW=%s；字面路径校验通过；%d 个路径不超过 10；不命中 lane 3 或控制文件；本票第 %d 次自动批准，不超过 2 次", flag, len(paths), approvals+1)
 	body := fmt.Sprintf("扩SCOPE：%s %s\n条件：%s", sender, now.Format(time.RFC3339), conditions)
@@ -169,4 +154,58 @@ func applyScopeReview(ctx context.Context, ledger ScopeLedger, ticket issues.Tas
 	body += fmt.Sprintf("\n%s{\"version\":1,\"attempt\":%d,\"phase\":\"waiting\"}", resolver.Prefix, record.Attempt)
 	_, err := ledger.CreateComment(ctx, ticket.Metadata.ID, body)
 	return "", err
+}
+
+const workerAutoScopePrefix = "扩SCOPE：worker-auto "
+
+// autoScopeApproval shares the path limits and persisted approval budget across stages.
+func autoScopeApproval(paths []string, comments []task.Comment, lane3Globs string) (int, string) {
+	if len(paths) == 0 {
+		return 0, "没有申请 SCOPE"
+	}
+	if _, refusal := validateScopeAddition(paths, lane3Globs); refusal != "" {
+		return 0, refusal
+	}
+	if len(paths) > 10 {
+		return 0, "申请超过 10 个路径"
+	}
+	for _, path := range paths {
+		for _, glob := range []string{".github", ".github/*", "core/gate.sh", "scripts/agent-gates/gate*.sh", "scripts/agent-gates/agent-graph.env", "driver/deploy", "driver/deploy/*", "Makefile", ".env*", "*/.env*", "*secrets*"} {
+			if task.ScopeMatch(glob, path) {
+				return 0, "路径 " + path + " 属于流水线控制文件"
+			}
+		}
+	}
+	approvals := 0
+	for _, comment := range comments {
+		if strings.HasPrefix(comment.Body, "扩SCOPE：auto ") || strings.HasPrefix(comment.Body, "扩SCOPE：top-resolver ") || strings.HasPrefix(comment.Body, workerAutoScopePrefix) {
+			approvals++
+		}
+	}
+	if approvals >= 2 {
+		return 0, "每张票自动批准已达 2 次"
+	}
+	return approvals, ""
+}
+
+// AutoApproveWorkerScope applies the automatic scope rules without a resolver-state receipt.
+// Its audit records the approval without changing ownership or resolver evidence.
+func AutoApproveWorkerScope(ctx context.Context, ledger ScopeLedger, id string, paths []string, lane3Globs string, now time.Time) (bool, error) {
+	ticket, err := ledger.Read(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	comments, err := ledger.ListComments(ctx, ticket.Metadata.ID)
+	if err != nil {
+		return false, err
+	}
+	if ticket.Metadata.State == "Canceled" || humanReleaseRefusal(id, ticket.Description, latestHumanEvidence(comments)) != "" {
+		return false, nil
+	}
+	approvals, refusal := autoScopeApproval(paths, comments, lane3Globs)
+	if refusal != "" {
+		return false, nil
+	}
+	audit := fmt.Sprintf("%s%s\n条件：AGENT_MODE=auto；字面路径校验通过；%d 个路径不超过 10；不命中 lane 3 或控制文件；本票第 %d 次自动批准，不超过 2 次\n路径：%s", workerAutoScopePrefix, now.Format(time.RFC3339), len(paths), approvals+1, strings.Join(paths, " "))
+	return applyWorkerScope(ctx, ledger, ticket.Metadata.ID, ticket.Description, paths, audit)
 }

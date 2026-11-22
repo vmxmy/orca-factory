@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -137,5 +138,39 @@ func TestRecordedAutoScopeApprovalCount(t *testing.T) {
 				t.Fatalf("refusal=%q edits=%q events=%q", refusal, h.ledger.edits, events)
 			}
 		})
+	}
+}
+
+func TestWorkerAutoScopeAuditPreservesEvidenceAndCountsAcrossStages(t *testing.T) {
+	h := scopedTicket(t, `{"action":"escalate","class":"scope-extension","reason":"scope","body":"proof","scope":["resolver.go"]}`)
+	ctx := context.Background()
+	before, err := h.ledger.ListComments(ctx, "canon-of12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/system-manual.md"}, "", h.g.now())
+		if err != nil || !approved {
+			t.Fatalf("approved=%v err=%v", approved, err)
+		}
+	}
+	after, err := h.ledger.ListComments(ctx, "canon-of12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(latestHumanEvidence(before), latestHumanEvidence(after)) || len(after) != len(before)+1 {
+		t.Fatalf("audit changed protocol or duplicated approval: before=%+v after=%+v", before, after)
+	}
+	refusal, err := AutoApproveScope(ctx, h.ledger, "OF-12", 7, "", h.g.now())
+	if err != nil || refusal != "" {
+		t.Fatalf("second approval: refusal=%q err=%v", refusal, err)
+	}
+	events := h.ledger.events["canon-of12"]
+	if !strings.Contains(events[len(events)-1], "第 2 次自动批准") {
+		t.Fatalf("worker approval not counted: %q", events)
+	}
+	approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/third.md"}, "", h.g.now())
+	if err != nil || approved {
+		t.Fatalf("third approval: approved=%v err=%v", approved, err)
 	}
 }
