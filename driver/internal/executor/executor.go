@@ -11,8 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -94,13 +94,11 @@ type Executor struct {
 	// ProbeModel confirms a model error read from a worker's screen with one
 	// request; nil means modelhealth.Probe in the repository checkout.
 	ProbeModel func(context.Context, modelhealth.Ref) modelhealth.Status
-	// Dispatched marks the executor the scheduler launched; its launch receipt
-	// alone supplies the repository mode.
-	Dispatched bool
+	// Launch is how the scheduler started this executor; its launch receipt alone
+	// supplies a dispatched executor's repository mode.
+	Launch Launch
 	// LaunchReceipts reports that the ledger proves who wrote an event.
 	LaunchReceipts bool
-	// LaunchTimeout bounds the scheduler's Orca call that creates this terminal.
-	LaunchTimeout time.Duration
 	// VerifyMode reads the repository's current AGENT_MODE for an executor the
 	// scheduler did not dispatch; nil leaves that mode unverified.
 	VerifyMode func(context.Context) (ScopeMode, error)

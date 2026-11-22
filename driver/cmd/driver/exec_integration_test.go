@@ -67,8 +67,9 @@ func TestExecCompatibility(t *testing.T) {
 		{"ordinary", []string{"exec", "ENG-1"}, 1, "ENG-1"},
 		{"merging", []string{"exec", "--merging", "ENG-1"}, 1, "ENG-1"},
 		{"missing ticket", []string{"exec", "--merging"}, 2, "unknown"},
-		{"dispatched", []string{"exec", "--dispatched", "ENG-1"}, 1, "ENG-1"},
-		{"dispatched missing ticket", []string{"exec", "--dispatched"}, 2, "unknown"},
+		{"dispatched", []string{"exec", "--dispatched", "30s", "ENG-1"}, 1, "ENG-1"},
+		{"dispatched missing timeout", []string{"exec", "--dispatched", "ENG-1"}, 2, "unknown"},
+		{"dispatched invalid timeout", []string{"exec", "--dispatched", "soon", "ENG-1"}, 2, "unknown"},
 		{"operator mode", []string{"exec", "--auto", "ENG-1"}, 2, "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

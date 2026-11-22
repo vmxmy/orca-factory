@@ -240,7 +240,7 @@ func TestClaimOneUpdateOneCommentAndSafeLaunch(t *testing.T) {
 	if err := r.Launch(context.Background(), ticket); err != nil {
 		t.Fatal(err)
 	}
-	if len(oc.launches) != 1 || oc.launches[0].Command != "exec '/opt/driver with space' exec --dispatched 'ENG-1' 2>>\"$HOME/.local/state/orca-factory/launch-ENG-1.log\"" {
+	if len(oc.launches) != 1 || oc.launches[0].Command != "exec '/opt/driver with space' exec --dispatched 0s 'ENG-1' 2>>\"$HOME/.local/state/orca-factory/launch-ENG-1.log\"" {
 		t.Fatalf("launch=%v", oc.launches)
 	}
 	ticket.Identifier = "ENG-1; touch secret"
@@ -639,7 +639,7 @@ func TestLaunchOrdinaryCorrectionKeepsRecoveryRoute(t *testing.T) {
 	if err := r.Launch(context.Background(), fromEvidence(t, Ticket{Identifier: "ENG-1", Repo: "/repo"}, comments)); err != nil {
 		t.Fatal(err)
 	}
-	if len(o.launches) != 1 || !strings.HasPrefix(o.launches[0].Command, "exec '/driver' exec --dispatched 'ENG-1'") {
+	if len(o.launches) != 1 || !strings.HasPrefix(o.launches[0].Command, "exec '/driver' exec --dispatched 0s 'ENG-1'") {
 		t.Fatalf("ordinary correction wrongly requires merge evidence: %+v", o.launches)
 	}
 }

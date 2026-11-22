@@ -23,14 +23,18 @@ import (
 func init() { Register("exec", execTicket) }
 func execTicket(args []string) int {
 	repo := executorLogRepository()
-	id, merging, dispatched, valid := "", false, false, false
+	id, merging, valid := "", false, false
+	var launch executor.Launch
 	switch {
 	case len(args) == 1 && logComponent.MatchString(args[0]):
 		id, valid = args[0], true
 	case len(args) == 2 && args[0] == "--merging" && logComponent.MatchString(args[1]):
 		id, merging, valid = args[1], true, true
-	case len(args) == 2 && args[0] == "--dispatched" && logComponent.MatchString(args[1]):
-		id, dispatched, valid = args[1], true, true
+	case len(args) == 3 && args[0] == "--dispatched" && logComponent.MatchString(args[2]):
+		if timeout, err := time.ParseDuration(args[1]); err == nil && timeout >= 0 {
+			id, valid = args[2], true
+			launch = executor.Launch{Dispatched: true, CallTimeout: timeout}
+		}
 	}
 	ticket := id
 	if !valid {
@@ -39,11 +43,11 @@ func execTicket(args []string) int {
 	return loggedCommand("executor", filepath.Join(logStateRoot(), repo, ticket, "executor.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
 		logger = logger.With("repo", repo, "ticket", ticket)
 		if !valid {
-			return 2, fmt.Errorf("usage: driver exec [--merging|--dispatched] <票号>")
+			return 2, fmt.Errorf("usage: driver exec [--merging | --dispatched <Orca 调用时限>] <票号>")
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging, dispatched, repositoryMode)
+		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging, launch, repositoryMode)
 		if err != nil {
 			return 1, err
 		}

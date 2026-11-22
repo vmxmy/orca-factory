@@ -96,7 +96,7 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
 			e, o, tools, recovery, ledger, ticket := recoveryFixture(t)
-			e.Dispatched, e.LaunchReceipts = true, true
+			e.Launch.Dispatched, e.LaunchReceipts = true, true
 			ledger.comments = []string{modeReceipt(tc.mode)}
 			ticket.Scope = "unit/change.go"
 			face := "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
@@ -174,6 +174,7 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 		{"dispatched manual outranks checkout", launched("manual"), verified("auto"), false, sibling, whitelist},
 		{"dispatched manual rejects auto paths", launched("manual"), verified("auto"), false, docs, resolver},
 		{"relaunch replaces the failed launch", []string{claim, otherTerminal, modeReceipt("manual")}, verified("auto"), false, docs, resolver},
+		{"dispatched meets tracked lane three", []string{claim, modeReceipt("auto") + "\nlane3: .env* docs/*"}, nil, false, docs, resolver},
 		{"dispatched without receipt", []string{claim}, verified("auto"), false, docs, resolver},
 		{"dispatched with another terminal's receipt", []string{claim, otherTerminal}, verified("auto"), false, sibling, resolver},
 		{"dispatched twice in one terminal", launched("auto", registered), verified("auto"), false, docs, resolver},
@@ -194,7 +195,7 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 			e, o, _, _, ledger, ticket := recoveryFixture(t)
 			e.VerifyMode = tc.verify
 			if !tc.operator {
-				e.Dispatched, e.LaunchReceipts = true, true
+				e.Launch.Dispatched, e.LaunchReceipts = true, true
 			}
 			ticket.Scope = "unit/change.go"
 			const face = "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
@@ -228,12 +229,12 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 func TestWorkerScopeBlockedAwaitsLaunchReceipt(t *testing.T) {
 	t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
 	e, o, _, _, ledger, ticket := recoveryFixture(t)
-	e.Dispatched, e.LaunchReceipts = true, true
-	e.LaunchTimeout = 15 * time.Minute
+	e.Launch.Dispatched, e.LaunchReceipts = true, true
+	e.Launch.CallTimeout = 15 * time.Minute
 	waited := time.Duration(0)
 	e.Sleep = func(_ context.Context, wait time.Duration) error {
 		if wait == launchReceiptInterval {
-			if waited += wait; waited == e.LaunchTimeout+launchReceiptMargin {
+			if waited += wait; waited == e.Launch.CallTimeout+launchReceiptMargin {
 				ledger.comments = append(ledger.comments, modeReceipt("auto"))
 			}
 		}
@@ -264,6 +265,7 @@ func TestBindModeFollowsTheBoundLedger(t *testing.T) {
 		{"github operator auto", github + "AGENT_MODE=auto\n", github + "AGENT_MODE=auto\n", false, "auto"},
 		{"github operator empty mode", github, github + "AGENT_MODE=\n", false, ""},
 		{"github operator moved instance", github, github + "AGENT_GH_API_URL=https://other.example/api\nAGENT_MODE=auto\n", false, ""},
+		{"github operator names the default instance", github, github + "AGENT_GH_API_URL=https://api.github.com/\n", false, "manual"},
 		{"github operator ignores feishu fields", github, github + "AGENT_FEISHU_PROJECT=host/two\n", false, "manual"},
 		{"github operator moved backend", github, "AGENT_ISSUE_BACKEND=feishu\nAGENT_GH_REPO=owner/repo\nAGENT_MODE=auto\n", false, ""},
 	} {
@@ -288,7 +290,7 @@ func TestBindModeFollowsTheBoundLedger(t *testing.T) {
 			e, _, _, _, ledger, ticket := recoveryFixture(t)
 			e.Issues = &scopeIssues{budgetIssues: ledger}
 			ledger.comments = []string{modeReceipt("auto"), "归属: 执行器 term=term_exec run=run_one attempt=1"}
-			e.Dispatched = tc.dispatched
+			e.Launch.Dispatched = tc.dispatched
 			e.bindMode(repo, bound, func(_ context.Context, path string, env map[string]string) (ScopeMode, error) {
 				if path != repo || !reflect.DeepEqual(env, bound) {
 					t.Fatalf("verified %q %v", path, env)
@@ -299,6 +301,28 @@ func TestBindModeFollowsTheBoundLedger(t *testing.T) {
 				t.Fatalf("mode=%+v err=%v, want %q", mode, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestWorkerScopeBlockedAfterSupersedingLaunchWritesNothing(t *testing.T) {
+	e, o, _, _, ledger, ticket := recoveryFixture(t)
+	e.Launch.Dispatched, e.LaunchReceipts = true, true
+	ticket.Scope = "unit/change.go"
+	store := &scopeIssues{budgetIssues: ledger, description: "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"}
+	e.Issues = store
+	e.Sleep = func(_ context.Context, wait time.Duration) error {
+		if wait == launchReceiptInterval {
+			ledger.comments = append(ledger.comments, "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=2 scheduler-attempt=2")
+		}
+		return nil
+	}
+	o.failFirst = true
+	o.failBody = "SCOPE-BLOCKED: docs/system-manual.md"
+	if _, err := e.Execute(t.Context(), ticket); !errors.Is(err, errLaunchSuperseded) {
+		t.Fatalf("err=%v", err)
+	}
+	if comments := strings.Join(ledger.comments, "\n"); strings.Contains(comments, "Agent处置") || strings.Contains(comments, "扩SCOPE：") {
+		t.Fatalf("superseded executor wrote the ticket: %q", comments)
 	}
 }
 
@@ -325,26 +349,29 @@ func TestLaunchedModeTrustsOnlyDriverReceipts(t *testing.T) {
 	}
 	receipt := "派工档位: term=" + terminal + " attempt=1 mode=auto"
 	for _, tc := range []struct {
-		name   string
-		events []task.Comment
-		want   string
+		name       string
+		events     []task.Comment
+		want       string
+		superseded bool
 	}{
-		{"driver receipt", []task.Comment{event(task.SourceDriver, receipt)}, "auto"},
-		{"no receipt", nil, ""},
-		{"operator event", []task.Comment{event(task.SourceOperator, receipt)}, ""},
-		{"event without source", []task.Comment{event("", receipt)}, ""},
-		{"quoted in another event", []task.Comment{event(task.SourceDriver, "阶段: gate\n"+receipt)}, ""},
-		{"another terminal", []task.Comment{event(task.SourceDriver, "派工档位: term=term_other attempt=1 mode=auto")}, ""},
-		{"unknown mode", []task.Comment{event(task.SourceDriver, "派工档位: term="+terminal+" attempt=1 mode=turbo")}, ""},
-		{"claimed again", []task.Comment{event(task.SourceDriver, receipt), later("阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=2 scheduler-attempt=2")}, ""},
-		{"launched again", []task.Comment{event(task.SourceDriver, receipt), later("派工档位: term=term_other attempt=2 mode=manual")}, ""},
-		{"released", []task.Comment{event(task.SourceDriver, receipt), later("阶段: 待领\n归属: 无")}, ""},
-		{"earlier launch", []task.Comment{{Source: task.SourceDriver, Body: "派工档位: term=term_other attempt=1 mode=manual", CreatedAt: launched.Add(-time.Minute)}, event(task.SourceDriver, receipt)}, "auto"},
-		{"registered twice", []task.Comment{event(task.SourceDriver, receipt), event(task.SourceDriver, registration)}, ""},
+		{"driver receipt", []task.Comment{event(task.SourceDriver, receipt)}, "auto", false},
+		{"no receipt", nil, "", false},
+		{"operator event", []task.Comment{event(task.SourceOperator, receipt)}, "", false},
+		{"event without source", []task.Comment{event("", receipt)}, "", false},
+		{"quoted in another event", []task.Comment{event(task.SourceDriver, "阶段: gate\n"+receipt)}, "", false},
+		{"another terminal", []task.Comment{event(task.SourceDriver, "派工档位: term=term_other attempt=1 mode=auto")}, "", false},
+		{"unknown mode", []task.Comment{event(task.SourceDriver, "派工档位: term="+terminal+" attempt=1 mode=turbo")}, "", false},
+		{"claimed again", []task.Comment{event(task.SourceDriver, receipt), later("阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=2 scheduler-attempt=2")}, "", true},
+		{"launched again", []task.Comment{event(task.SourceDriver, receipt), later("派工档位: term=term_other attempt=2 mode=manual")}, "", true},
+		{"released", []task.Comment{event(task.SourceDriver, receipt), later("阶段: 待领\n归属: 无")}, "", true},
+		{"released in the same second", []task.Comment{event(task.SourceDriver, receipt), event(task.SourceDriver, "阶段: 待领\n归属: 无")}, "", true},
+		{"earlier launch", []task.Comment{{Source: task.SourceDriver, Body: "派工档位: term=term_other attempt=1 mode=manual", CreatedAt: launched.Add(-time.Minute)}, event(task.SourceDriver, receipt)}, "auto", false},
+		{"registered twice", []task.Comment{event(task.SourceDriver, receipt), event(task.SourceDriver, registration)}, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := launchedMode(slices.Concat(history, tc.events), terminal); got != tc.want {
-				t.Fatalf("mode=%q, want %q", got, tc.want)
+			mode, _, err := launchedMode(slices.Concat(history, tc.events), terminal)
+			if mode.Mode != tc.want || errors.Is(err, errLaunchSuperseded) != tc.superseded || err != nil && !tc.superseded {
+				t.Fatalf("mode=%+v err=%v, want %q superseded=%v", mode, err, tc.want, tc.superseded)
 			}
 		})
 	}

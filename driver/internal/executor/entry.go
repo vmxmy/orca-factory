@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,8 +28,8 @@ import (
 
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
-// dispatched marks the scheduler's launch; verifyMode reads the AGENT_MODE of a Feishu repository path and its bound ledger.
-func RunTicket(ctx context.Context, identifier string, merging, dispatched bool, verifyMode func(context.Context, string, map[string]string) (ScopeMode, error)) (result Result, err error) {
+// launch describes the scheduler's launch; verifyMode reads the AGENT_MODE of a Feishu repository path and its bound ledger.
+func RunTicket(ctx context.Context, identifier string, merging bool, launch Launch, verifyMode func(context.Context, string, map[string]string) (ScopeMode, error)) (result Result, err error) {
 	session, err := maintenance.Session()
 	if err != nil {
 		return Result{}, err
@@ -85,8 +87,7 @@ func RunTicket(ctx context.Context, identifier string, merging, dispatched bool,
 	}
 	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
 	e.Orca, e.Issues, e.GitHub = oc, store, gc
-	e.Dispatched = dispatched
-	e.LaunchTimeout = cfg.Tuning.Orca.CallTimeout
+	e.Launch = launch
 	e.bindMode(repo, storeEnv, verifyMode)
 	e.Config.Root, err = executorStateRoot()
 	if err != nil {
@@ -114,16 +115,32 @@ func (e *Executor) bindMode(repo string, ledger map[string]string, verify func(c
 		if err != nil {
 			return ScopeMode{}, err
 		}
-		for _, key := range []string{"AGENT_ISSUE_BACKEND", "AGENT_GH_REPO", "AGENT_GH_API_URL"} {
+		for _, key := range []string{"AGENT_ISSUE_BACKEND", "AGENT_GH_REPO"} {
 			if bound[key] != ledger[key] {
 				return ScopeMode{}, fmt.Errorf("%s no longer names the bound ledger", key)
 			}
+		}
+		if githubAPI(bound) != githubAPI(ledger) {
+			return ScopeMode{}, errors.New("AGENT_GH_API_URL no longer names the bound ledger")
 		}
 		if mode := current.Config.Mode; mode != "manual" && mode != "auto" {
 			return ScopeMode{}, errors.New("AGENT_MODE must be manual or auto")
 		}
 		return ScopeMode{Mode: current.Config.Mode, Lane3Globs: current.Config.Lane3Globs}, nil
 	}
+}
+
+// githubAPI is the endpoint github.New derives from a ledger's configuration.
+func githubAPI(ledger map[string]string) string {
+	return strings.TrimRight(cmp.Or(ledger["AGENT_GH_API_URL"], "https://api.github.com"), "/")
+}
+
+// Launch is how the scheduler started this executor; the zero value is an
+// operator's start, which no launch receipt covers.
+type Launch struct {
+	Dispatched bool
+	// CallTimeout bounds the scheduler's Orca call that creates the terminal.
+	CallTimeout time.Duration
 }
 
 // ScopeMode is a repository's AGENT_MODE and the lane 3 globs read with it.
@@ -137,9 +154,8 @@ type ScopeMode struct {
 // executor takes the scheduler's launch receipt and nothing else; any other
 // start verifies the repository's current mode.
 func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (ScopeMode, error) {
-	if e.Dispatched {
-		mode, err := e.awaitLaunchedMode(ctx, t, terminal)
-		return ScopeMode{Mode: mode}, err
+	if e.Launch.Dispatched {
+		return e.awaitLaunchedMode(ctx, t, terminal)
 	}
 	if e.VerifyMode == nil {
 		return ScopeMode{}, nil
@@ -160,9 +176,9 @@ const (
 	launchReceiptInterval = 10 * time.Second
 )
 
-func (e *Executor) awaitLaunchedMode(ctx context.Context, t Ticket, terminal string) (string, error) {
+func (e *Executor) awaitLaunchedMode(ctx context.Context, t Ticket, terminal string) (ScopeMode, error) {
 	if !e.LaunchReceipts {
-		return "", nil
+		return ScopeMode{}, nil
 	}
 	wait := e.Sleep
 	if wait == nil {
@@ -171,42 +187,46 @@ func (e *Executor) awaitLaunchedMode(ctx context.Context, t Ticket, terminal str
 	for waited := time.Duration(0); ; waited += launchReceiptInterval {
 		comments, err := e.Issues.ListComments(ctx, t.ID)
 		if err != nil {
-			return "", safeDependencyError(err)
+			return ScopeMode{}, safeDependencyError(err)
 		}
-		if mode := launchedMode(comments, terminal); mode != "" {
-			return mode, nil
+		mode, pending, err := launchedMode(comments, terminal)
+		if err != nil || !pending {
+			return mode, err
 		}
-		if waited >= e.LaunchTimeout+launchReceiptMargin {
+		if waited >= e.Launch.CallTimeout+launchReceiptMargin {
 			e.warn("%s launch mode receipt missing for terminal %s", t.Identifier, terminal)
-			return "", nil
+			return ScopeMode{}, nil
 		}
 		if err := wait(ctx, launchReceiptInterval); err != nil {
-			return "", err
+			return ScopeMode{}, err
 		}
 	}
 }
 
-// launchedMode reads the mode the scheduler recorded for the terminal it created,
-// "" when it created none. Only the first executor registered in that terminal is
-// the dispatched one, and only until the ticket changes hands or launches again.
-func launchedMode(comments []task.Comment, terminal string) string {
-	mode, registrations := "", 0
-	var launched time.Time
+// launchedMode reads the mode the scheduler recorded for the terminal it created;
+// pending means no receipt yet. Only the first executor registered in that
+// terminal is the dispatched one. Once the ticket changes hands or launches again
+// this executor no longer owns it and may not write it.
+func launchedMode(comments []task.Comment, terminal string) (mode ScopeMode, pending bool, err error) {
+	comments = slices.Clone(comments)
+	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
+	receipts, registrations, own := 0, 0, "term="+terminal
 	for _, comment := range comments {
-		words, ok := launchReceipt(comment)
-		if !ok || !slices.Contains(words, "term="+terminal) {
-			continue
-		}
-		mode, launched = "", comment.CreatedAt
-		for _, value := range []string{"auto", "manual"} {
-			if slices.Contains(words, "mode="+value) {
-				mode = value
+		if receipt, ok := strings.CutPrefix(comment.Body, LaunchModePrefix); ok && comment.Source == task.SourceDriver {
+			head, lane3, _ := strings.Cut(receipt, "\n"+LaunchLane3Prefix)
+			words := strings.Fields(head)
+			switch {
+			case !slices.Contains(words, own):
+				if receipts+registrations > 0 {
+					return ScopeMode{}, false, errLaunchSuperseded
+				}
+			case slices.Contains(words, "mode=auto"):
+				receipts, mode = receipts+1, ScopeMode{Mode: "auto", Lane3Globs: strings.Fields(lane3)}
+			case slices.Contains(words, "mode=manual"):
+				receipts, mode = receipts+1, ScopeMode{Mode: "manual", Lane3Globs: strings.Fields(lane3)}
+			default:
+				receipts += 2
 			}
-		}
-	}
-	for _, comment := range comments {
-		if words, ok := launchReceipt(comment); ok && !slices.Contains(words, "term="+terminal) && comment.CreatedAt.After(launched) {
-			return ""
 		}
 		if !comment.CarriesProtocol() {
 			continue
@@ -217,27 +237,28 @@ func launchedMode(comments []task.Comment, terminal string) string {
 				continue
 			}
 			words := strings.Fields(ownership)
-			if len(words) > 0 && words[0] == string(machine.OwnerExecutor) && slices.Contains(words, "term="+terminal) {
+			if len(words) > 0 && words[0] == string(machine.OwnerExecutor) && slices.Contains(words, own) {
 				registrations++
-			} else if comment.CreatedAt.After(launched) {
-				return ""
+			} else if receipts+registrations > 0 {
+				return ScopeMode{}, false, errLaunchSuperseded
 			}
 		}
 	}
-	if registrations != 1 {
-		return ""
+	if registrations != 1 || receipts > 1 {
+		return ScopeMode{}, false, nil
 	}
-	return mode
+	return mode, receipts == 0, nil
 }
 
-func launchReceipt(comment task.Comment) ([]string, bool) {
-	receipt, ok := strings.CutPrefix(comment.Body, LaunchModePrefix)
-	return strings.Fields(receipt), ok && comment.Source == task.SourceDriver
-}
+var errLaunchSuperseded = errors.New("executor launch superseded; ticket no longer owned by this terminal")
 
 // LaunchModePrefix starts the scheduler's receipt that binds the AGENT_MODE it
 // tracked at launch to the executor terminal it created.
-const LaunchModePrefix = "派工档位: "
+const (
+	LaunchModePrefix = "派工档位: "
+	// LaunchLane3Prefix starts its second line, the lane 3 globs tracked with it.
+	LaunchLane3Prefix = "lane3: "
+)
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and
 // applies the machine profile through the same function LoadRepository uses.

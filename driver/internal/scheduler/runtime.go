@@ -704,7 +704,7 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	}
 	flag := ""
 	if verb == " exec " {
-		flag = "--dispatched "
+		flag = "--dispatched " + r.Tuning.Orca.CallTimeout.String() + " "
 	}
 	receipt, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + flag + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
@@ -726,8 +726,8 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	return nil
 }
 
-// recordLaunchMode binds the repository mode tracked at this launch to the
-// terminal it created; the executor there reads it back before extending scope.
+// recordLaunchMode binds the repository mode and lane 3 globs tracked at this
+// launch to the terminal it created; the executor there reads it back before extending scope.
 func (r *Runtime) recordLaunchMode(ctx context.Context, t Ticket, receipt orca.Receipt) error {
 	var terminal struct {
 		Handle string `json:"handle"`
@@ -735,11 +735,12 @@ func (r *Runtime) recordLaunchMode(ctx context.Context, t Ticket, receipt orca.R
 	if err := json.Unmarshal(receipt["terminal"], &terminal); err != nil || terminal.Handle == "" {
 		return errors.New("terminal handle missing")
 	}
+	env := r.Repositories[t.Repo].Env
 	mode := "manual"
-	if autoMode(r.Repositories[t.Repo].Env) {
+	if autoMode(env) {
 		mode = "auto"
 	}
-	_, err := r.Clients[t.Repo].CreateComment(ctx, t.ID, fmt.Sprintf("%sterm=%s attempt=%d mode=%s", executor.LaunchModePrefix, terminal.Handle, t.Attempt, mode))
+	_, err := r.Clients[t.Repo].CreateComment(ctx, t.ID, fmt.Sprintf("%sterm=%s attempt=%d mode=%s\n%s%s", executor.LaunchModePrefix, terminal.Handle, t.Attempt, mode, executor.LaunchLane3Prefix, strings.Join(strings.Fields(env["AGENT_LANE3_GLOBS"]), " ")))
 	return err
 }
 func (r *Runtime) command(ctx context.Context, dir, path string, args ...string) ([]byte, error) {
