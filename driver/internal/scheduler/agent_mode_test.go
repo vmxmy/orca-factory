@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -40,19 +39,14 @@ func modeRuntime(store issues.Store, env map[string]string) *Runtime {
 	return &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 }
 
-type launchOrderOrca struct {
-	fakeOrca
-	store    *fakeIssues
-	receipts []int
-}
-
-func (o *launchOrderOrca) TerminalCreate(ctx context.Context, opts orca.TerminalOptions) (orca.Receipt, error) {
-	o.receipts = append(o.receipts, len(o.store.comments))
-	return o.fakeOrca.TerminalCreate(ctx, opts)
-}
-
 func TestLaunchRecordsTrackedAgentMode(t *testing.T) {
-	receipt := regexp.MustCompile(`^派工档位: launch=([A-Z0-9]+) attempt=2 mode=(auto|manual)$`)
+	var created struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(recorded(t, "orca-terminal-create-probe.json"), &created); err != nil {
+		t.Fatal(err)
+	}
+	const handle = "term_4aa07a88-df90-4866-aa2e-dcefaf47537c"
 	for _, tc := range []struct{ name, tracked, disk, want string }{
 		{"tracked auto with manual on disk", "auto", "manual", "auto"},
 		{"tracked manual with auto on disk", "manual", "auto", "manual"},
@@ -73,24 +67,14 @@ func TestLaunchRecordsTrackedAgentMode(t *testing.T) {
 			}
 			comments := evidenceComments("阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=2 scheduler-attempt=2")
 			store := &fakeIssues{issueComments: comments}
-			oc := &launchOrderOrca{store: store}
+			oc := &runtimeFailureOrca{success: created.Result}
 			r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Path: repo, Env: env}}, Orca: oc, DriverPath: "/driver"}
 			before := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
-			for range 2 {
-				if err := r.Launch(t.Context(), before); err != nil {
-					t.Fatal(err)
-				}
+			if err := r.Launch(t.Context(), before); err != nil {
+				t.Fatal(err)
 			}
-			names := map[string]bool{}
-			for i, body := range store.comments {
-				match := receipt.FindStringSubmatch(body)
-				if match == nil || match[2] != tc.want || !strings.HasPrefix(oc.launches[i].Command, "exec '/driver' exec --dispatched '"+match[1]+"' 'ENG-1'") {
-					t.Fatalf("receipt=%q command=%q, want mode %s", body, oc.launches[i].Command, tc.want)
-				}
-				names[match[1]] = true
-			}
-			if len(names) != 2 || !slices.Equal(oc.receipts, []int{1, 2}) {
-				t.Fatalf("launch names=%v receipts before each terminal=%v", names, oc.receipts)
+			if want := "派工档位: term=" + handle + " attempt=2 mode=" + tc.want; len(store.comments) != 1 || store.comments[0] != want {
+				t.Fatalf("receipt = %q, want %q", store.comments, want)
 			}
 			after := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, store.issueComments)
 			if !unregistered(after) || after.Owner != before.Owner || after.Attempt != before.Attempt || after.Phase != before.Phase {
@@ -106,30 +90,14 @@ func (refusedReceiptStore) CreateComment(context.Context, string, string) (task.
 	return task.Comment{}, errors.New("ledger unavailable")
 }
 
-func TestLaunchWithoutModeReceiptCreatesNoTerminal(t *testing.T) {
+func TestLaunchWithoutModeReceiptIsNotRetried(t *testing.T) {
 	comments := evidenceComments("阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1")
 	oc := &fakeOrca{}
 	r := &Runtime{Clients: map[string]issues.Store{"/repo": refusedReceiptStore{&fakeIssues{issueComments: comments}}}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo"}}, Orca: oc, DriverPath: "/driver"}
 	err := r.Launch(t.Context(), fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, comments))
-	if err == nil || len(oc.launches) != 0 {
+	var uncertain *terminalCreateUncertainError
+	if !errors.As(err, &uncertain) || len(oc.launches) != 1 {
 		t.Fatalf("err=%v launches=%d", err, len(oc.launches))
-	}
-}
-
-type refusedTerminalOrca struct{ fakeOrca }
-
-func (*refusedTerminalOrca) TerminalCreate(context.Context, orca.TerminalOptions) (orca.Receipt, error) {
-	return nil, errors.New("terminal refused")
-}
-
-func TestLaunchWithoutTerminalRevokesItsMode(t *testing.T) {
-	store := &fakeIssues{issueComments: evidenceComments("阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1")}
-	r := &Runtime{Clients: map[string]issues.Store{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_MODE": "auto"}}}, Orca: &refusedTerminalOrca{}, DriverPath: "/driver"}
-	if err := r.Launch(t.Context(), fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, store.issueComments)); err == nil {
-		t.Fatal("refused terminal accepted")
-	}
-	if len(store.comments) != 2 || store.comments[1] != strings.Replace(store.comments[0], "mode=auto", "mode=revoked", 1) {
-		t.Fatalf("comments=%q", store.comments)
 	}
 }
 

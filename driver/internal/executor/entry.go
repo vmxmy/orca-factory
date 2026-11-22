@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,9 +26,8 @@ import (
 
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
-// launch names the scheduler's launch receipt, "" for an operator's start;
-// verifyMode reads the AGENT_MODE of a Feishu repository path and its bound ledger.
-func RunTicket(ctx context.Context, identifier string, merging bool, launch string, verifyMode func(context.Context, string, map[string]string) (string, error)) (result Result, err error) {
+// dispatched marks the scheduler's launch; verifyMode reads the AGENT_MODE of a Feishu repository path and its bound ledger.
+func RunTicket(ctx context.Context, identifier string, merging, dispatched bool, verifyMode func(context.Context, string, map[string]string) (string, error)) (result Result, err error) {
 	session, err := maintenance.Session()
 	if err != nil {
 		return Result{}, err
@@ -88,7 +85,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool, launch stri
 	}
 	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
 	e.Orca, e.Issues, e.GitHub = oc, store, gc
-	e.Launch = launch
+	e.Dispatched = dispatched
 	e.bindMode(repo, storeEnv, verifyMode)
 	e.Config.Root, err = executorStateRoot()
 	if err != nil {
@@ -104,19 +101,25 @@ func RunTicket(ctx context.Context, identifier string, merging bool, launch stri
 
 // bindMode fixes where an executor bound to ledger reads its AGENT_MODE. Only the
 // Feishu ledger proves who wrote an event, and the scheduler tracks no other
-// backend, whose mode therefore comes from the profile that bound the ledger.
+// backend, whose mode therefore comes from the profile alone.
 func (e *Executor) bindMode(repo string, ledger map[string]string, verify func(context.Context, string, map[string]string) (string, error)) {
 	if ledger["AGENT_ISSUE_BACKEND"] == "feishu" {
 		e.LaunchReceipts = true
 		e.VerifyMode = func(ctx context.Context) (string, error) { return verify(ctx, repo, ledger) }
 		return
 	}
-	mode := e.Config.Mode
-	e.VerifyMode = func(context.Context) (string, error) {
-		if mode != "manual" && mode != "auto" {
-			return "", errors.New("AGENT_MODE must be manual or auto")
+	e.VerifyMode = func(ctx context.Context) (string, error) {
+		current, bound, err := repositoryExecutor(ctx, repo)
+		if err != nil {
+			return "", err
 		}
-		return mode, nil
+		if !maps.Equal(bound, ledger) {
+			return "", errors.New("repository profile no longer names the bound ledger")
+		}
+		if mode := current.Config.Mode; mode == "manual" || mode == "auto" {
+			return mode, nil
+		}
+		return "", errors.New("AGENT_MODE must be manual or auto")
 	}
 }
 
@@ -125,19 +128,8 @@ func (e *Executor) bindMode(repo string, ledger map[string]string, verify func(c
 // executor takes the scheduler's launch receipt and nothing else; any other
 // start verifies the repository's current mode.
 func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (string, error) {
-	if e.Launch != "" {
-		if !e.LaunchReceipts {
-			return "", nil
-		}
-		comments, err := e.Issues.ListComments(ctx, t.ID)
-		if err != nil {
-			return "", safeDependencyError(err)
-		}
-		mode := launchedMode(comments, e.Launch, terminal)
-		if mode == "" {
-			e.warn("%s launch mode receipt %s unverified", t.Identifier, e.Launch)
-		}
-		return mode, nil
+	if e.Dispatched {
+		return e.awaitLaunchedMode(ctx, t, terminal)
 	}
 	if e.VerifyMode == nil {
 		return "", nil
@@ -150,52 +142,76 @@ func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (st
 	return mode, nil
 }
 
-// launchedMode reads the mode of a launch receipt, "" unless the scheduler wrote
-// it, has neither revoked it nor launched again since, and this terminal's is the
-// only registration that used it.
-func launchedMode(comments []task.Comment, launch, terminal string) string {
-	comments = slices.Clone(comments)
-	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
-	mode, registrations, own, revoked := "", 0, false, false
+// The scheduler can only write the receipt after Orca returns the terminal, so a
+// recovered report can ask for scope first. The wait outlasts every bounded call
+// between them; past it the scheduler never recorded this launch.
+const (
+	launchReceiptReads    = 60
+	launchReceiptInterval = 10 * time.Second
+)
+
+func (e *Executor) awaitLaunchedMode(ctx context.Context, t Ticket, terminal string) (string, error) {
+	if !e.LaunchReceipts {
+		return "", nil
+	}
+	wait := e.Sleep
+	if wait == nil {
+		wait = pause
+	}
+	for read := 1; ; read++ {
+		comments, err := e.Issues.ListComments(ctx, t.ID)
+		if err != nil {
+			return "", safeDependencyError(err)
+		}
+		if mode := launchedMode(comments, terminal); mode != "" {
+			return mode, nil
+		}
+		if read == launchReceiptReads {
+			e.warn("%s launch mode receipt missing for terminal %s", t.Identifier, terminal)
+			return "", nil
+		}
+		if err := wait(ctx, launchReceiptInterval); err != nil {
+			return "", err
+		}
+	}
+}
+
+// launchedMode reads the mode the scheduler recorded for the terminal it created,
+// "" when it created none. Only the first executor registered in that terminal is
+// the dispatched one; a later registration there is an operator's start.
+func launchedMode(comments []task.Comment, terminal string) string {
+	mode, registrations := "", 0
 	for _, comment := range comments {
 		if !comment.CarriesProtocol() {
 			continue
 		}
 		for _, line := range strings.Split(comment.Body, "\n") {
-			ownership, ok := strings.CutPrefix(line, "归属: "+string(machine.OwnerExecutor)+" ")
-			words := strings.Fields(ownership)
-			if ok && slices.Contains(words, "launch="+launch) {
-				registrations++
-				own = slices.Contains(words, "term="+terminal)
+			if ownership, ok := strings.CutPrefix(line, "归属: "); ok {
+				words := strings.Fields(ownership)
+				if len(words) > 0 && words[0] == string(machine.OwnerExecutor) && slices.Contains(words, "term="+terminal) {
+					registrations++
+				}
 			}
 		}
 		receipt, ok := strings.CutPrefix(comment.Body, LaunchModePrefix)
-		if !ok || comment.Source != task.SourceDriver {
-			continue
-		}
 		words := strings.Fields(receipt)
-		mode = ""
-		if !slices.Contains(words, "launch="+launch) {
+		if !ok || comment.Source != task.SourceDriver || !slices.Contains(words, "term="+terminal) {
 			continue
 		}
-		switch {
-		case slices.Contains(words, "mode=auto"):
-			mode = "auto"
-		case slices.Contains(words, "mode=manual"):
-			mode = "manual"
-		default:
-			revoked = true
+		for _, value := range []string{"auto", "manual"} {
+			if slices.Contains(words, "mode="+value) {
+				mode = value
+			}
 		}
 	}
-	if revoked || registrations != 1 || !own {
+	if registrations != 1 {
 		return ""
 	}
 	return mode
 }
 
-// LaunchModePrefix starts the scheduler's receipt of the AGENT_MODE it tracked
-// when it launched an executor under a single-use launch name, and the revocation
-// of a launch whose terminal Orca did not confirm.
+// LaunchModePrefix starts the scheduler's receipt that binds the AGENT_MODE it
+// tracked at launch to the executor terminal it created.
 const LaunchModePrefix = "派工档位: "
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and
@@ -210,7 +226,7 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
 	// Only selected, noncredential fields leave this subprocess.
-	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "$AGENT_ROLE_REVIEWER" "$AGENT_ROLE_REVIEWER_CMD_SMALL" "$AGENT_ROLE_REVIEWER_SMALL" "$AGENT_ROLE_SECOND_REVIEWER_CMD" "$AGENT_ROLE_SECOND_REVIEWER" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}" "${AGENT_WORKER_SKILLS:-}"; for k in AGENT_MODE $(compgen -v AGENT_TIER_) $(compgen -v AGENT_ROLE_REVIEWER); do printf '%s\0' "$k" "${!k}"; done`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "$AGENT_ROLE_REVIEWER" "$AGENT_ROLE_REVIEWER_CMD_SMALL" "$AGENT_ROLE_REVIEWER_SMALL" "$AGENT_ROLE_SECOND_REVIEWER_CMD" "$AGENT_ROLE_SECOND_REVIEWER" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}" "${AGENT_WORKER_SKILLS:-}"; [ -z "${AGENT_MODE+x}" ] || printf '%s\0' AGENT_MODE "$AGENT_MODE"; for k in $(compgen -v AGENT_TIER_) $(compgen -v AGENT_ROLE_REVIEWER); do printf '%s\0' "$k" "${!k}"; done`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
@@ -300,8 +316,12 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 			}
 		}
 	}
+	mode, configured := explicit["AGENT_MODE"]
+	if !configured {
+		mode = "manual"
+	}
 	cfg := Config{Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
-		Agent: entry.Agent, Model: entry.Model, Effort: entry.Effort, Escalate: escalate, Mode: cmp.Or(explicit["AGENT_MODE"], "manual"),
+		Agent: entry.Agent, Model: entry.Model, Effort: entry.Effort, Escalate: escalate, Mode: mode,
 		TierSettings: settings, TierChain: chain, WorkerSkills: workerSkills, Lane3Globs: strings.Fields(values[11])}
 	if cfg.Model == "" {
 		cfg.Effort = ""

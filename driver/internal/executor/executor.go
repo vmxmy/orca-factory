@@ -93,9 +93,9 @@ type Executor struct {
 	// ProbeModel confirms a model error read from a worker's screen with one
 	// request; nil means modelhealth.Probe in the repository checkout.
 	ProbeModel func(context.Context, modelhealth.Ref) modelhealth.Status
-	// Launch names the launch receipt of the executor the scheduler dispatched,
-	// which alone supplies its repository mode; "" is an operator's start.
-	Launch string
+	// Dispatched marks the executor the scheduler launched; its launch receipt
+	// alone supplies the repository mode.
+	Dispatched bool
 	// LaunchReceipts reports that the ledger proves who wrote an event.
 	LaunchReceipts bool
 	// VerifyMode reads the repository's current AGENT_MODE for an executor the
@@ -280,9 +280,6 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		}
 		if previous.Owner != next.Owner {
 			body += fmt.Sprintf("\n归属: %s term=%s run=%s attempt=%d since=%s", next.Owner, c.Terminal, result.RunID, next.Attempt, e.Now().UTC().Format(time.RFC3339))
-			if ev == machine.EvClaim && e.Launch != "" {
-				body += " launch=" + e.Launch
-			}
 		}
 		if ev == machine.EvOpenPR {
 			evidence, err := e.freezeMergeHandoff(ctx, c, t, result, cp, head, diffBase, spec, mergeGateOutput, mergeReviewOutput)

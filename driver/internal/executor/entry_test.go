@@ -117,6 +117,7 @@ func TestExecReadsModeFromItsProfileSnapshot(t *testing.T) {
 		{"manual", "AGENT_MODE=manual\n", "manual"},
 		{"inherited only", "", "manual"},
 		{"invalid", "AGENT_MODE=turbo\n", "turbo"},
+		{"explicitly empty", "AGENT_MODE=\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -134,6 +135,32 @@ func TestExecReadsModeFromItsProfileSnapshot(t *testing.T) {
 				t.Fatalf("mode=%q err=%v, want %q", executor.Config.Mode, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestExecReadsUnsetModeUnderNounset(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if inherited, ok := os.LookupEnv("AGENT_MODE"); ok {
+		t.Setenv("AGENT_MODE", inherited)
+		if err := os.Unsetenv("AGENT_MODE"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := t.TempDir()
+	path := filepath.Join(repo, "scripts/agent-gates/agent-graph.env")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profile := "set -u\nAGENT_GH_REPO=owner/repo\nAGENT_TIER_DEFAULT=codex::low\n"
+	for _, key := range []string{"REVIEWER_CMD", "REVIEWER", "REVIEWER_CMD_SMALL", "REVIEWER_SMALL", "SECOND_REVIEWER_CMD", "SECOND_REVIEWER"} {
+		profile += "AGENT_ROLE_" + key + "=codex::low\n"
+	}
+	if err := os.WriteFile(path, []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executor, _, err := repositoryExecutor(t.Context(), repo)
+	if err != nil || executor.Config.Mode != "manual" {
+		t.Fatalf("mode=%q err=%v", executor.Config.Mode, err)
 	}
 }
 

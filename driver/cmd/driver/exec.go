@@ -23,14 +23,14 @@ import (
 func init() { Register("exec", execTicket) }
 func execTicket(args []string) int {
 	repo := executorLogRepository()
-	id, launch, merging, valid := "", "", false, false
+	id, merging, dispatched, valid := "", false, false, false
 	switch {
 	case len(args) == 1 && logComponent.MatchString(args[0]):
 		id, valid = args[0], true
 	case len(args) == 2 && args[0] == "--merging" && logComponent.MatchString(args[1]):
 		id, merging, valid = args[1], true, true
-	case len(args) == 3 && args[0] == "--dispatched" && logComponent.MatchString(args[1]) && logComponent.MatchString(args[2]):
-		launch, id, valid = args[1], args[2], true
+	case len(args) == 2 && args[0] == "--dispatched" && logComponent.MatchString(args[1]):
+		id, dispatched, valid = args[1], true, true
 	}
 	ticket := id
 	if !valid {
@@ -39,11 +39,11 @@ func execTicket(args []string) int {
 	return loggedCommand("executor", filepath.Join(logStateRoot(), repo, ticket, "executor.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
 		logger = logger.With("repo", repo, "ticket", ticket)
 		if !valid {
-			return 2, fmt.Errorf("usage: driver exec [--merging | --dispatched <派工编号>] <票号>")
+			return 2, fmt.Errorf("usage: driver exec [--merging|--dispatched] <票号>")
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging, launch, repositoryMode)
+		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging, dispatched, repositoryMode)
 		if err != nil {
 			return 1, err
 		}
