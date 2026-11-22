@@ -99,9 +99,8 @@ type Executor struct {
 	Launch Launch
 	// LaunchReceipts reports that the ledger proves who wrote an event.
 	LaunchReceipts bool
-	// TrackedLane3 reads the lane 3 globs the scheduler applies to this repository
-	// now; nil when the scheduler cannot track it.
-	TrackedLane3 func() ([]string, error)
+	// CurrentLane3 rereads the checkout's lane 3 globs for an automatic approval.
+	CurrentLane3 func(context.Context) ([]string, error)
 	// VerifyMode reads the repository's current AGENT_MODE for an executor the
 	// scheduler did not dispatch; nil leaves that mode unverified.
 	VerifyMode func(context.Context) (ScopeMode, error)

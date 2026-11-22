@@ -174,6 +174,7 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 		{"dispatched manual outranks checkout", launched("manual"), verified("auto"), false, sibling, whitelist},
 		{"dispatched manual rejects auto paths", launched("manual"), verified("auto"), false, docs, resolver},
 		{"relaunch replaces the failed launch", []string{claim, otherTerminal, modeReceipt("manual")}, verified("auto"), false, docs, resolver},
+		{"dispatched meets tracked lane three", []string{claim, modeReceipt("auto") + "\nlane3: .env* docs/*"}, nil, false, docs, resolver},
 		{"dispatched without receipt", []string{claim}, verified("auto"), false, docs, resolver},
 		{"dispatched with another terminal's receipt", []string{claim, otherTerminal}, verified("auto"), false, sibling, resolver},
 		{"dispatched twice in one terminal", launched("auto", registered), verified("auto"), false, docs, resolver},
@@ -260,7 +261,7 @@ func TestAutoOwnedRechecksTheApprovalSnapshot(t *testing.T) {
 	}{
 		{"operator registered", false, []string{claimed, registered}, true, false},
 		{"operator registration not visible", false, []string{claimed}, false, false},
-		{"operator handed over before its registration is visible", false, []string{human}, false, false},
+		{"operator handed over before its registration is visible", false, []string{claimed, human}, false, true},
 		{"operator handed to a human", false, []string{registered, human}, false, true},
 		{"operator superseded", false, []string{registered, claimed}, false, true},
 		{"operator restarted after release", false, []string{registered, "归属: 无", registered}, true, false},
@@ -283,32 +284,20 @@ func TestAutoOwnedRechecksTheApprovalSnapshot(t *testing.T) {
 	}
 }
 
-func TestScopeModeAppliesTrackedLane3(t *testing.T) {
-	root, repo := t.TempDir(), t.TempDir()
-	link := filepath.Join(t.TempDir(), "registered")
-	if err := os.Symlink(repo, link); err != nil {
-		t.Fatal(err)
-	}
+func TestScopeModeRereadsLane3ForADispatchedApproval(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		publish bool
-		want    ScopeMode
+		name string
+		read func(context.Context) ([]string, error)
+		want ScopeMode
 	}{
-		{"unpublished", false, ScopeMode{}},
-		{"published", true, ScopeMode{Mode: "auto", Lane3Globs: []string{".env*", "docs/*"}}},
+		{"current globs", func(context.Context) ([]string, error) { return []string{"docs/*"}, nil }, ScopeMode{Mode: "auto", Lane3Globs: []string{".env*", "docs/*"}}},
+		{"unreadable", func(context.Context) ([]string, error) { return nil, errors.New("profile unreadable") }, ScopeMode{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.publish {
-				if err := PublishTrackedLane3(root, link, []string{"docs/*"}); err != nil {
-					t.Fatal(err)
-				}
-			}
 			e, _, _, _, ledger, ticket := recoveryFixture(t)
-			e.Config.Root = root
-			ledger.comments = []string{"归属: 执行器 term=term_exec run=run_one attempt=1"}
-			e.bindMode(repo, map[string]string{"AGENT_ISSUE_BACKEND": "feishu"}, func(context.Context, string, map[string]string) (ScopeMode, error) {
-				return ScopeMode{Mode: "auto", Lane3Globs: []string{".env*"}}, nil
-			})
+			e.Issues = &scopeIssues{budgetIssues: ledger}
+			e.Launch.Dispatched, e.LaunchReceipts, e.CurrentLane3 = true, true, tc.read
+			ledger.comments = []string{modeReceipt("auto") + "\nlane3: .env*", "归属: 执行器 term=term_exec run=run_one attempt=1"}
 			if mode, err := e.scopeMode(t.Context(), ticket, "term_exec"); err != nil || !reflect.DeepEqual(mode, tc.want) {
 				t.Fatalf("mode=%+v err=%v, want %+v", mode, err, tc.want)
 			}
@@ -356,9 +345,6 @@ func TestBindModeFollowsTheBoundLedger(t *testing.T) {
 			e.Issues = &scopeIssues{budgetIssues: ledger}
 			ledger.comments = []string{modeReceipt("auto"), "归属: 执行器 term=term_exec run=run_one attempt=1"}
 			e.Launch.Dispatched = tc.dispatched
-			if err := PublishTrackedLane3(e.Config.Root, repo, nil); err != nil {
-				t.Fatal(err)
-			}
 			e.bindMode(repo, bound, func(_ context.Context, path string, env map[string]string) (ScopeMode, error) {
 				if path != repo || !reflect.DeepEqual(env, bound) {
 					t.Fatalf("verified %q %v", path, env)

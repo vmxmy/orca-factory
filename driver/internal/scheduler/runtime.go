@@ -262,7 +262,7 @@ func (r *Runtime) Track(ctx context.Context, repo config.Repository) error {
 		return err
 	}
 	r.Clients[repo.Path] = client
-	r.track(repo)
+	r.Repositories[repo.Path] = repo
 	r.watchRunners(repo)
 	return nil
 }
@@ -271,17 +271,6 @@ func (r *Runtime) Track(ctx context.Context, repo config.Repository) error {
 // calls this only after confirming repo's ledger identity keys match the
 // previous configuration, so no bound GitHub/Feishu client is rebound.
 func (r *Runtime) UpdateRepository(repo config.Repository) {
-	r.track(repo)
-}
-
-// track stores repo after publishing its lane 3 globs, so an executor never reads
-// older ones than this process applies.
-func (r *Runtime) track(repo config.Repository) {
-	if r.StateRoot != "" {
-		if err := executor.PublishTrackedLane3(r.StateRoot, repo.Path, strings.Fields(repo.Env["AGENT_LANE3_GLOBS"])); err != nil {
-			runx.LoggerFrom(context.Background()).Warn("tracked lane 3 globs not published", "path", repo.Path, "err", err)
-		}
-	}
 	r.Repositories[repo.Path] = repo
 }
 
@@ -737,8 +726,8 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	return nil
 }
 
-// recordLaunchMode binds the repository mode tracked at this launch to the
-// terminal it created; the executor there reads it back before extending scope.
+// recordLaunchMode binds the repository mode and lane 3 globs tracked at this
+// launch to the terminal it created; the executor there reads it back before extending scope.
 func (r *Runtime) recordLaunchMode(ctx context.Context, t Ticket, receipt orca.Receipt) error {
 	var terminal struct {
 		Handle string `json:"handle"`
@@ -746,11 +735,12 @@ func (r *Runtime) recordLaunchMode(ctx context.Context, t Ticket, receipt orca.R
 	if err := json.Unmarshal(receipt["terminal"], &terminal); err != nil || terminal.Handle == "" {
 		return errors.New("terminal handle missing")
 	}
+	env := r.Repositories[t.Repo].Env
 	mode := "manual"
-	if autoMode(r.Repositories[t.Repo].Env) {
+	if autoMode(env) {
 		mode = "auto"
 	}
-	_, err := r.Clients[t.Repo].CreateComment(ctx, t.ID, fmt.Sprintf("%sterm=%s attempt=%d mode=%s", executor.LaunchModePrefix, terminal.Handle, t.Attempt, mode))
+	_, err := r.Clients[t.Repo].CreateComment(ctx, t.ID, fmt.Sprintf("%sterm=%s attempt=%d mode=%s\n%s%s", executor.LaunchModePrefix, terminal.Handle, t.Attempt, mode, executor.LaunchLane3Prefix, strings.Join(strings.Fields(env["AGENT_LANE3_GLOBS"]), " ")))
 	return err
 }
 func (r *Runtime) command(ctx context.Context, dir, path string, args ...string) ([]byte, error) {

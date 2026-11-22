@@ -3,7 +3,6 @@ package executor
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
@@ -106,9 +105,12 @@ func RunTicket(ctx context.Context, identifier string, merging bool, launch Laun
 // Feishu ledger proves who wrote an event, and the scheduler tracks no other
 // backend, whose mode therefore comes from the profile alone.
 func (e *Executor) bindMode(repo string, ledger map[string]string, verify func(context.Context, string, map[string]string) (ScopeMode, error)) {
+	e.CurrentLane3 = func(ctx context.Context) ([]string, error) {
+		current, _, err := repositoryExecutor(ctx, repo)
+		return current.Config.Lane3Globs, err
+	}
 	if ledger["AGENT_ISSUE_BACKEND"] == "feishu" {
 		e.LaunchReceipts = true
-		e.TrackedLane3 = func() ([]string, error) { return readTrackedLane3(e.Config.Root, repo) }
 		e.VerifyMode = func(ctx context.Context) (ScopeMode, error) { return verify(ctx, repo, ledger) }
 		return
 	}
@@ -157,15 +159,15 @@ type ScopeMode struct {
 // start verifies the repository's current mode.
 func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (ScopeMode, error) {
 	mode, err := e.governingMode(ctx, t, terminal)
-	if err != nil || mode.Mode != "auto" || e.TrackedLane3 == nil {
+	if err != nil || mode.Mode != "auto" || e.CurrentLane3 == nil {
 		return mode, err
 	}
-	tracked, err := e.TrackedLane3()
+	current, err := e.CurrentLane3(ctx)
 	if err != nil {
-		e.warn("%s tracked lane 3 globs unverified: %s", t.Identifier, logErrorSummary(err))
+		e.warn("%s lane 3 globs unverified: %s", t.Identifier, logErrorSummary(err))
 		return ScopeMode{}, nil
 	}
-	return ScopeMode{Mode: mode.Mode, Lane3Globs: slices.Concat(mode.Lane3Globs, tracked)}, nil
+	return ScopeMode{Mode: mode.Mode, Lane3Globs: slices.Concat(mode.Lane3Globs, current)}, nil
 }
 
 func (e *Executor) governingMode(ctx context.Context, t Ticket, terminal string) (ScopeMode, error) {
@@ -191,53 +193,6 @@ func (e *Executor) governingMode(ctx context.Context, t Ticket, terminal string)
 		return ScopeMode{}, nil
 	}
 	return current, nil
-}
-
-// PublishTrackedLane3 records the lane 3 globs the scheduler applies to the
-// repository at path, so its executors never approve what the resolver stage
-// refuses. It only narrows approvals; a failed write leaves them unverified.
-func PublishTrackedLane3(root, path string, globs []string) error {
-	file, err := trackedLane3Path(root, path)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(file+".new", []byte(strings.Join(globs, " ")), 0o600); err != nil {
-		return errors.Join(err, removeIfExists(file))
-	}
-	if err := os.Rename(file+".new", file); err != nil {
-		return errors.Join(err, removeIfExists(file))
-	}
-	return nil
-}
-
-func removeIfExists(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
-func readTrackedLane3(root, path string) ([]string, error) {
-	file, err := trackedLane3Path(root, path)
-	if err != nil {
-		return nil, err
-	}
-	globs, err := os.ReadFile(file)
-	if err != nil {
-		return nil, err
-	}
-	return strings.Fields(string(globs)), nil
-}
-
-func trackedLane3Path(root, path string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, "tracked-lane3", fmt.Sprintf("%x", sha256.Sum256([]byte(resolved)))), nil
 }
 
 // The scheduler can only write the receipt after Orca returns the terminal, so a
@@ -299,16 +254,17 @@ func launchedMode(comments []task.Comment, terminal string) (mode ScopeMode, pen
 	receipts, registrations, own := 0, 0, "term="+terminal
 	for _, comment := range comments {
 		if receipt, ok := strings.CutPrefix(comment.Body, LaunchModePrefix); ok && comment.Source == task.SourceDriver {
-			words := strings.Fields(receipt)
+			head, lane3, _ := strings.Cut(receipt, "\n"+LaunchLane3Prefix)
+			words := strings.Fields(head)
 			switch {
 			case !slices.Contains(words, own):
 				if receipts+registrations > 0 {
 					return ScopeMode{}, false, errLaunchSuperseded
 				}
 			case slices.Contains(words, "mode=auto"):
-				receipts, mode = receipts+1, ScopeMode{Mode: "auto"}
+				receipts, mode = receipts+1, ScopeMode{Mode: "auto", Lane3Globs: strings.Fields(lane3)}
 			case slices.Contains(words, "mode=manual"):
-				receipts, mode = receipts+1, ScopeMode{Mode: "manual"}
+				receipts, mode = receipts+1, ScopeMode{Mode: "manual", Lane3Globs: strings.Fields(lane3)}
 			default:
 				receipts += 2
 			}
@@ -362,17 +318,22 @@ func (e *Executor) autoOwned(terminal string) func([]task.Comment) (bool, error)
 }
 
 // operatorOwned reports that this terminal's latest registration still holds the
-// ticket, false while no registration is visible.
+// ticket, false while no registration is visible. An executor's line before it is
+// the reservation it takes over; any other owner's means the ticket was lost.
 func operatorOwned(comments []task.Comment, terminal string) (bool, error) {
 	comments = slices.Clone(comments)
 	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
 	held, lost := false, false
 	for _, comment := range comments {
 		registered, foreign := ownershipEvent(comment, "term="+terminal)
-		held = held || registered
-		lost = foreign || lost && !registered
+		switch {
+		case registered:
+			held, lost = true, foreign
+		case foreign:
+			lost = held || !strings.Contains("\n"+comment.Body, "\n归属: "+string(machine.OwnerExecutor)+" ")
+		}
 	}
-	if held && lost {
+	if lost {
 		return false, errLaunchSuperseded
 	}
 	return held, nil
@@ -382,7 +343,11 @@ var errLaunchSuperseded = errors.New("ticket no longer owned by this executor te
 
 // LaunchModePrefix starts the scheduler's receipt that binds the AGENT_MODE it
 // tracked at launch to the executor terminal it created.
-const LaunchModePrefix = "派工档位: "
+const (
+	LaunchModePrefix = "派工档位: "
+	// LaunchLane3Prefix starts its second line, the lane 3 globs tracked with it.
+	LaunchLane3Prefix = "lane3: "
+)
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and
 // applies the machine profile through the same function LoadRepository uses.
