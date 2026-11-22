@@ -96,6 +96,7 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
 			e, o, tools, recovery, ledger, ticket := recoveryFixture(t)
+			e.Dispatched = true
 			ledger.comments = []string{launchReceipt(tc.mode)}
 			ticket.Scope = "unit/change.go"
 			face := "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
@@ -162,29 +163,33 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 		name     string
 		comments []string
 		verify   func(context.Context) (string, error)
+		operator bool
 		files    string
 		want     string
 	}{
-		{"dispatched auto outranks checkout", launched("auto"), verified("manual"), docs, autoRule},
-		{"dispatched auto after two approvals", launched("auto", approvals...), verified("manual"), sibling, resolver},
-		{"dispatched manual outranks checkout", launched("manual"), verified("auto"), sibling, whitelist},
-		{"dispatched manual rejects auto paths", launched("manual"), verified("auto"), docs, resolver},
-		{"relaunch replaces the failed launch", []string{claim, otherTerminal, launchReceipt("manual")}, verified("auto"), docs, resolver},
-		{"operator start in auto repository", nil, verified("auto"), docs, autoRule},
-		{"operator start in auto repository after two approvals", approvals, verified("auto"), sibling, resolver},
-		{"operator start in manual repository keeps whitelist", nil, verified("manual"), sibling, whitelist},
-		{"operator start in manual repository rejects auto paths", nil, verified("manual"), docs, resolver},
-		{"operator start on an undelivered claim", []string{claim}, verified("manual"), docs, resolver},
-		{"operator start beside another launch", []string{claim, otherTerminal}, verified("manual"), docs, resolver},
-		{"operator start unverified", []string{claim}, unverified, sibling, resolver},
-		{"operator start without verifier", nil, nil, sibling, resolver},
-		{"operator restart in the launched terminal", launched("auto", registered), verified("manual"), docs, resolver},
-		{"operator restart unverified", launched("manual", registered), unverified, sibling, resolver},
+		{"dispatched auto outranks checkout", launched("auto"), verified("manual"), false, docs, autoRule},
+		{"dispatched auto after two approvals", launched("auto", approvals...), verified("manual"), false, sibling, resolver},
+		{"dispatched manual outranks checkout", launched("manual"), verified("auto"), false, sibling, whitelist},
+		{"dispatched manual rejects auto paths", launched("manual"), verified("auto"), false, docs, resolver},
+		{"relaunch replaces the failed launch", []string{claim, otherTerminal, launchReceipt("manual")}, verified("auto"), false, docs, resolver},
+		{"dispatched without receipt", []string{claim}, verified("auto"), false, docs, resolver},
+		{"dispatched with another terminal's receipt", []string{claim, otherTerminal}, verified("auto"), false, sibling, resolver},
+		{"dispatched twice in one terminal", launched("auto", registered), verified("auto"), false, docs, resolver},
+		{"operator start in auto repository", nil, verified("auto"), true, docs, autoRule},
+		{"operator start in auto repository after two approvals", approvals, verified("auto"), true, sibling, resolver},
+		{"operator start in manual repository keeps whitelist", nil, verified("manual"), true, sibling, whitelist},
+		{"operator start in manual repository rejects auto paths", nil, verified("manual"), true, docs, resolver},
+		{"operator start on an undelivered claim", []string{claim}, verified("manual"), true, docs, resolver},
+		{"operator start beside another launch", []string{claim, otherTerminal}, verified("manual"), true, docs, resolver},
+		{"operator start unverified", []string{claim}, unverified, true, sibling, resolver},
+		{"operator start without verifier", nil, nil, true, sibling, resolver},
+		{"operator restart in the launched terminal", launched("auto", registered), verified("manual"), true, docs, resolver},
+		{"operator restart unverified", launched("manual", registered), unverified, true, sibling, resolver},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "1")
 			e, o, _, _, ledger, ticket := recoveryFixture(t)
-			e.VerifyMode = tc.verify
+			e.Dispatched, e.VerifyMode = !tc.operator, tc.verify
 			ticket.Scope = "unit/change.go"
 			const face = "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
 			store := &scopeIssues{budgetIssues: ledger, description: face}
@@ -211,6 +216,44 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 				t.Fatalf("face=%q state=%+v comments=%q", store.description, result.State, written)
 			}
 		})
+	}
+}
+
+func TestWorkerScopeBlockedAwaitsLaunchReceipt(t *testing.T) {
+	t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
+	e, o, _, _, ledger, ticket := recoveryFixture(t)
+	e.Dispatched = true
+	e.VerifyMode = func(context.Context) (string, error) { return "manual", nil }
+	e.Sleep = func(_ context.Context, wait time.Duration) error {
+		if wait == launchReceiptInterval {
+			ledger.comments = append(ledger.comments, launchReceipt("auto"))
+		}
+		return nil
+	}
+	ticket.Scope = "unit/change.go"
+	store := &scopeIssues{budgetIssues: ledger, description: "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"}
+	e.Issues = store
+	o.failFirst = true
+	o.failBody = "SCOPE-BLOCKED: docs/system-manual.md"
+	result, err := e.Execute(t.Context(), ticket)
+	if err != nil || result.State.Corrections != 1 || !strings.Contains(store.description, "unit/change.go docs/system-manual.md") {
+		t.Fatalf("err=%v state=%+v face=%q", err, result.State, store.description)
+	}
+}
+
+func TestBindModeTrustsReceiptsOnlyOnFeishu(t *testing.T) {
+	for _, tc := range []struct {
+		backend          string
+		dispatched, want bool
+	}{{"feishu", true, true}, {"feishu", false, false}, {"github", true, false}} {
+		var e Executor
+		e.bindMode("/repo", tc.backend, tc.dispatched, func(_ context.Context, repo, backend string) (string, error) {
+			return repo + " " + backend, nil
+		})
+		mode, err := e.VerifyMode(t.Context())
+		if e.Dispatched != tc.want || err != nil || mode != "/repo "+tc.backend {
+			t.Fatalf("%+v: dispatched=%v mode=%q err=%v", tc, e.Dispatched, mode, err)
+		}
 	}
 }
 

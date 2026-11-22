@@ -396,6 +396,7 @@ func TestWorkerScopeBlockedSafeFilesExtendScope(t *testing.T) {
 			ticket.Scope = "unit/change.go"
 			store := &scopeIssues{budgetIssues: ledger, description: "## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"}
 			e.Issues = store
+			e.Dispatched = true
 			ledger.comments = []string{launchReceipt("manual")}
 			e.Config.Lane3Globs = strings.Fields(tc.lane3)
 			o.failFirst = true

@@ -93,6 +93,9 @@ type Executor struct {
 	// ProbeModel confirms a model error read from a worker's screen with one
 	// request; nil means modelhealth.Probe in the repository checkout.
 	ProbeModel func(context.Context, modelhealth.Ref) modelhealth.Status
+	// Dispatched marks the executor the scheduler launched; its launch receipt
+	// alone supplies the repository mode.
+	Dispatched bool
 	// VerifyMode reads the repository's current AGENT_MODE for an executor the
 	// scheduler did not dispatch; nil leaves that mode unverified.
 	VerifyMode func(context.Context) (string, error)

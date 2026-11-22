@@ -24,12 +24,14 @@ import (
 func init() { Register("exec", execTicket) }
 func execTicket(args []string) int {
 	repo := executorLogRepository()
-	id, merging, valid := "", false, false
+	id, merging, dispatched, valid := "", false, false, false
 	switch {
 	case len(args) == 1 && logComponent.MatchString(args[0]):
 		id, valid = args[0], true
 	case len(args) == 2 && args[0] == "--merging" && logComponent.MatchString(args[1]):
 		id, merging, valid = args[1], true, true
+	case len(args) == 2 && args[0] == "--dispatched" && logComponent.MatchString(args[1]):
+		id, dispatched, valid = args[1], true, true
 	}
 	ticket := id
 	if !valid {
@@ -38,11 +40,11 @@ func execTicket(args []string) int {
 	return loggedCommand("executor", filepath.Join(logStateRoot(), repo, ticket, "executor.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
 		logger = logger.With("repo", repo, "ticket", ticket)
 		if !valid {
-			return 2, fmt.Errorf("usage: driver exec [--merging] <票号>")
+			return 2, fmt.Errorf("usage: driver exec [--merging|--dispatched] <票号>")
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging, repositoryMode)
+		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging, dispatched, repositoryMode)
 		if err != nil {
 			return 1, err
 		}
@@ -52,16 +54,20 @@ func execTicket(args []string) int {
 	})
 }
 
-// repositoryMode is the AGENT_MODE of the checkout at root as the scheduler's
-// next discovery would track it. A Feishu repository discovery does not take
-// over keeps a mode only the scheduler knows, so it stays unverified here; the
-// scheduler never tracks another backend, whose profile alone sets the mode.
-func repositoryMode(ctx context.Context, root string) (string, error) {
-	profile, err := config.LoadRepository(root)
-	if err != nil {
-		return "", err
-	}
-	if profile.Env["AGENT_ISSUE_BACKEND"] != "feishu" {
+// repositoryMode is the AGENT_MODE of the checkout at root, whose tickets the
+// executor reads from backend, as the scheduler's next discovery would track it.
+// A Feishu repository discovery does not take over keeps a mode only the
+// scheduler knows, so it stays unverified here; the scheduler never tracks
+// another backend, whose profile alone sets the mode.
+func repositoryMode(ctx context.Context, root, backend string) (string, error) {
+	if backend != "feishu" {
+		profile, err := config.LoadRepository(root)
+		if err != nil {
+			return "", err
+		}
+		if profile.Env["AGENT_ISSUE_BACKEND"] != backend {
+			return "", errors.New("repository profile names another issue backend")
+		}
 		return cmp.Or(profile.Env["AGENT_MODE"], "manual"), nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)

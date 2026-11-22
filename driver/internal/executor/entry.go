@@ -26,8 +26,8 @@ import (
 
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
-// verifyMode reads the current AGENT_MODE of the repository at a path.
-func RunTicket(ctx context.Context, identifier string, merging bool, verifyMode func(context.Context, string) (string, error)) (result Result, err error) {
+// verifyMode reads the current AGENT_MODE of the repository at a path with a backend.
+func RunTicket(ctx context.Context, identifier string, merging, dispatched bool, verifyMode func(context.Context, string, string) (string, error)) (result Result, err error) {
 	session, err := maintenance.Session()
 	if err != nil {
 		return Result{}, err
@@ -58,7 +58,6 @@ func RunTicket(ctx context.Context, identifier string, merging bool, verifyMode 
 		return Result{}, err
 	}
 	e.Config.Terminal = terminal
-	e.VerifyMode = func(ctx context.Context) (string, error) { return verifyMode(ctx, repo) }
 	cfg, err := config.Load(home())
 	if err != nil {
 		return Result{}, errors.New("driver configuration could not be loaded")
@@ -86,6 +85,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool, verifyMode 
 	}
 	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
 	e.Orca, e.Issues, e.GitHub = oc, store, gc
+	e.bindMode(repo, storeEnv["AGENT_ISSUE_BACKEND"], dispatched, verifyMode)
 	e.Config.Root, err = executorStateRoot()
 	if err != nil {
 		return Result{}, err
@@ -98,17 +98,20 @@ func RunTicket(ctx context.Context, identifier string, merging bool, verifyMode 
 	return e.Start(ctx, ticket)
 }
 
+// bindMode fixes where this process reads its AGENT_MODE. Only the Feishu ledger
+// proves who wrote an event, so another backend never trusts launch receipts.
+func (e *Executor) bindMode(repo, backend string, dispatched bool, verify func(context.Context, string, string) (string, error)) {
+	e.Dispatched = dispatched && backend == "feishu"
+	e.VerifyMode = func(ctx context.Context) (string, error) { return verify(ctx, repo, backend) }
+}
+
 // scopeMode is the AGENT_MODE that governs a worker's scope request, or "" when
-// it cannot be verified and the request belongs to the resolver. The scheduler's
-// launch receipt decides for the executor it dispatched; any other start
-// verifies the repository's current mode.
+// it cannot be verified and the request belongs to the resolver. A dispatched
+// executor takes the scheduler's launch receipt and nothing else; any other
+// start verifies the repository's current mode.
 func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (string, error) {
-	comments, err := e.Issues.ListComments(ctx, t.ID)
-	if err != nil {
-		return "", safeDependencyError(err)
-	}
-	if mode := launchedMode(comments, terminal); mode != "" {
-		return mode, nil
+	if e.Dispatched {
+		return e.awaitLaunchedMode(ctx, t, terminal)
 	}
 	if e.VerifyMode == nil {
 		return "", nil
@@ -119,6 +122,36 @@ func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (st
 		return "", nil
 	}
 	return mode, nil
+}
+
+// The scheduler writes the receipt after it creates the terminal, so a recovered
+// report can ask for scope before the receipt lands.
+const (
+	launchReceiptReads    = 6
+	launchReceiptInterval = 5 * time.Second
+)
+
+func (e *Executor) awaitLaunchedMode(ctx context.Context, t Ticket, terminal string) (string, error) {
+	wait := e.Sleep
+	if wait == nil {
+		wait = pause
+	}
+	for read := 1; ; read++ {
+		comments, err := e.Issues.ListComments(ctx, t.ID)
+		if err != nil {
+			return "", safeDependencyError(err)
+		}
+		if mode := launchedMode(comments, terminal); mode != "" {
+			return mode, nil
+		}
+		if read == launchReceiptReads {
+			e.warn("%s launch mode receipt missing for terminal %s", t.Identifier, terminal)
+			return "", nil
+		}
+		if err := wait(ctx, launchReceiptInterval); err != nil {
+			return "", err
+		}
+	}
 }
 
 // launchedMode reads the mode the scheduler recorded for the terminal it created,
