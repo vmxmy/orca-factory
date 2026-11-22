@@ -20,14 +20,17 @@ func TestEligibleMode(t *testing.T) {
 	if err := os.Symlink(root, link); err != nil {
 		t.Fatal(err)
 	}
+	ledger := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": "host/one"}
 	project := func(path, mode string) projects.Project {
-		env := map[string]string{}
+		env := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": "host/one"}
 		if mode != "" {
 			env["AGENT_MODE"] = mode
 		}
 		return projects.Project{Path: path, Repository: config.Repository{Path: path, Env: env}}
 	}
 	rejected := project(root, "auto").Repository
+	moved := project(root, "auto")
+	moved.Repository.Env["AGENT_FEISHU_PROJECT"] = "host/two"
 	for _, tc := range []struct {
 		name   string
 		result projects.Result
@@ -37,10 +40,11 @@ func TestEligibleMode(t *testing.T) {
 		{"manual", projects.Result{Eligible: []projects.Project{project(other, "auto"), project(root, "manual")}}, "manual"},
 		{"default", projects.Result{Eligible: []projects.Project{project(root, "")}}, "manual"},
 		{"rejected", projects.Result{Eligible: []projects.Project{project(other, "auto")}, Rejected: []projects.Rejection{{Path: root, Repository: &rejected}}}, ""},
+		{"another ledger project", projects.Result{Eligible: []projects.Project{moved}}, ""},
 		{"ambiguous", projects.Result{Eligible: []projects.Project{project(root, "auto"), project(link, "manual")}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mode, err := eligibleMode(tc.result, root)
+			mode, err := eligibleMode(tc.result, root, ledger)
 			if mode != tc.want || (err != nil) != (tc.want == "") {
 				t.Fatalf("mode=%q err=%v, want %q", mode, err, tc.want)
 			}
@@ -51,7 +55,8 @@ func TestEligibleMode(t *testing.T) {
 func TestRepositoryModeOutsideDiscovery(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, tc := range []struct{ name, env, want string }{
-		{"backend not in profile", "AGENT_MODE=auto\n", ""},
+		{"backend from the environment", "AGENT_GH_REPO=acme/one\nAGENT_MODE=manual\n", "manual"},
+		{"another repository", "AGENT_ISSUE_BACKEND=github\nAGENT_GH_REPO=acme/two\nAGENT_MODE=auto\n", ""},
 		{"feishu profile", "AGENT_ISSUE_BACKEND=feishu\nAGENT_MODE=auto\n", ""},
 		{"github auto", "AGENT_ISSUE_BACKEND=github\nAGENT_MODE=auto\n", "auto"},
 		{"github default", "AGENT_ISSUE_BACKEND=github\n", "manual"},
@@ -66,7 +71,7 @@ func TestRepositoryModeOutsideDiscovery(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(gates, "agent-graph.env"), []byte(tc.env), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			mode, err := repositoryMode(t.Context(), root, "github")
+			mode, err := repositoryMode(t.Context(), root, map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "acme/one"})
 			if mode != tc.want || (err != nil) != (tc.want == "") {
 				t.Fatalf("mode=%q err=%v, want %q", mode, err, tc.want)
 			}
@@ -85,8 +90,8 @@ func TestExecCompatibility(t *testing.T) {
 		{"ordinary", []string{"exec", "ENG-1"}, 1, "ENG-1"},
 		{"merging", []string{"exec", "--merging", "ENG-1"}, 1, "ENG-1"},
 		{"missing ticket", []string{"exec", "--merging"}, 2, "unknown"},
-		{"dispatched", []string{"exec", "--dispatched", "ENG-1"}, 1, "ENG-1"},
-		{"dispatched missing ticket", []string{"exec", "--dispatched"}, 2, "unknown"},
+		{"dispatched", []string{"exec", "--dispatched", "LAUNCH1", "ENG-1"}, 1, "ENG-1"},
+		{"dispatched missing launch", []string{"exec", "--dispatched", "ENG-1"}, 2, "unknown"},
 		{"operator mode", []string{"exec", "--auto", "ENG-1"}, 2, "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

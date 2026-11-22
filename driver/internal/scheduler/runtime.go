@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -702,11 +703,20 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	if r.orcaFailures >= orcaRuntimeFailureThreshold {
 		return &terminalCreateRuntimeError{err: errOrcaRuntimePaused, ticket: t, failures: r.orcaFailures}
 	}
-	flag := ""
+	flags := ""
 	if verb == " exec " {
-		flag = "--dispatched "
+		launch := rand.Text()
+		mode := "manual"
+		if autoMode(r.Repositories[t.Repo].Env) {
+			mode = "auto"
+		}
+		// The receipt precedes the terminal, so the executor never runs ahead of it.
+		if _, err := r.Clients[t.Repo].CreateComment(ctx, t.ID, fmt.Sprintf("%slaunch=%s attempt=%d mode=%s", executor.LaunchModePrefix, launch, t.Attempt, mode)); err != nil {
+			return fmt.Errorf("launch mode receipt failed: %w", err)
+		}
+		flags = "--dispatched " + quote(launch) + " "
 	}
-	receipt, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + flag + quote(t.Identifier) + launchLog(t.Identifier)})
+	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + flags + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
 		var rejected *orca.RejectedError
 		if errors.As(err, &rejected) && rejected.Code == "runtime_error" {
@@ -717,30 +727,7 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	}
 	r.orcaFailures = 0
 	r.orcaCreated++
-	if verb != " exec " {
-		return nil
-	}
-	if err := r.recordLaunchMode(ctx, t, receipt); err != nil {
-		return &terminalCreateUncertainError{fmt.Errorf("executor launch mode receipt: %w", err)}
-	}
 	return nil
-}
-
-// recordLaunchMode binds the repository mode tracked at this launch to the
-// terminal it created; the executor there reads it back before extending scope.
-func (r *Runtime) recordLaunchMode(ctx context.Context, t Ticket, receipt orca.Receipt) error {
-	var terminal struct {
-		Handle string `json:"handle"`
-	}
-	if err := json.Unmarshal(receipt["terminal"], &terminal); err != nil || terminal.Handle == "" {
-		return errors.New("terminal handle missing")
-	}
-	mode := "manual"
-	if autoMode(r.Repositories[t.Repo].Env) {
-		mode = "auto"
-	}
-	_, err := r.Clients[t.Repo].CreateComment(ctx, t.ID, fmt.Sprintf("%sterm=%s attempt=%d mode=%s", executor.LaunchModePrefix, terminal.Handle, t.Attempt, mode))
-	return err
 }
 func (r *Runtime) command(ctx context.Context, dir, path string, args ...string) ([]byte, error) {
 	run := r.Run

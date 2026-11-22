@@ -26,8 +26,9 @@ import (
 
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
-// verifyMode reads the current AGENT_MODE of the repository at a path with a backend.
-func RunTicket(ctx context.Context, identifier string, merging, dispatched bool, verifyMode func(context.Context, string, string) (string, error)) (result Result, err error) {
+// launch names the scheduler's launch receipt, "" for an operator's start, whose
+// AGENT_MODE verifyMode reads for a repository path and its bound ledger.
+func RunTicket(ctx context.Context, identifier string, merging bool, launch string, verifyMode func(context.Context, string, map[string]string) (string, error)) (result Result, err error) {
 	session, err := maintenance.Session()
 	if err != nil {
 		return Result{}, err
@@ -85,7 +86,10 @@ func RunTicket(ctx context.Context, identifier string, merging, dispatched bool,
 	}
 	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
 	e.Orca, e.Issues, e.GitHub = oc, store, gc
-	e.bindMode(repo, storeEnv["AGENT_ISSUE_BACKEND"], dispatched, verifyMode)
+	e.Launch = launch
+	e.VerifyMode = func(ctx context.Context) (string, error) { return verifyMode(ctx, repo, storeEnv) }
+	// Only the Feishu ledger proves who wrote an event.
+	e.LaunchReceipts = storeEnv["AGENT_ISSUE_BACKEND"] == "feishu"
 	e.Config.Root, err = executorStateRoot()
 	if err != nil {
 		return Result{}, err
@@ -98,20 +102,24 @@ func RunTicket(ctx context.Context, identifier string, merging, dispatched bool,
 	return e.Start(ctx, ticket)
 }
 
-// bindMode fixes where this process reads its AGENT_MODE. Only the Feishu ledger
-// proves who wrote an event, so another backend never trusts launch receipts.
-func (e *Executor) bindMode(repo, backend string, dispatched bool, verify func(context.Context, string, string) (string, error)) {
-	e.Dispatched = dispatched && backend == "feishu"
-	e.VerifyMode = func(ctx context.Context) (string, error) { return verify(ctx, repo, backend) }
-}
-
 // scopeMode is the AGENT_MODE that governs a worker's scope request, or "" when
 // it cannot be verified and the request belongs to the resolver. A dispatched
 // executor takes the scheduler's launch receipt and nothing else; any other
 // start verifies the repository's current mode.
 func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (string, error) {
-	if e.Dispatched {
-		return e.awaitLaunchedMode(ctx, t, terminal)
+	if e.Launch != "" {
+		if !e.LaunchReceipts {
+			return "", nil
+		}
+		comments, err := e.Issues.ListComments(ctx, t.ID)
+		if err != nil {
+			return "", safeDependencyError(err)
+		}
+		mode := launchedMode(comments, e.Launch, terminal)
+		if mode == "" {
+			e.warn("%s launch mode receipt %s unverified", t.Identifier, e.Launch)
+		}
+		return mode, nil
 	}
 	if e.VerifyMode == nil {
 		return "", nil
@@ -124,56 +132,25 @@ func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal string) (st
 	return mode, nil
 }
 
-// The scheduler writes the receipt after it creates the terminal, so a recovered
-// report can ask for scope before the receipt lands.
-const (
-	launchReceiptReads    = 6
-	launchReceiptInterval = 5 * time.Second
-)
-
-func (e *Executor) awaitLaunchedMode(ctx context.Context, t Ticket, terminal string) (string, error) {
-	wait := e.Sleep
-	if wait == nil {
-		wait = pause
-	}
-	for read := 1; ; read++ {
-		comments, err := e.Issues.ListComments(ctx, t.ID)
-		if err != nil {
-			return "", safeDependencyError(err)
-		}
-		if mode := launchedMode(comments, terminal); mode != "" {
-			return mode, nil
-		}
-		if read == launchReceiptReads {
-			e.warn("%s launch mode receipt missing for terminal %s", t.Identifier, terminal)
-			return "", nil
-		}
-		if err := wait(ctx, launchReceiptInterval); err != nil {
-			return "", err
-		}
-	}
-}
-
-// launchedMode reads the mode the scheduler recorded for the terminal it created,
-// "" when it created none. Only the first executor registered in that terminal is
-// the dispatched one; a later registration there is an operator's start.
-func launchedMode(comments []task.Comment, terminal string) string {
-	mode, registrations := "", 0
+// launchedMode reads the mode of a launch receipt, "" unless the scheduler wrote
+// it and this terminal's is the only registration that used it.
+func launchedMode(comments []task.Comment, launch, terminal string) string {
+	mode, registrations, own := "", 0, false
 	for _, comment := range comments {
 		if !comment.CarriesProtocol() {
 			continue
 		}
 		for _, line := range strings.Split(comment.Body, "\n") {
-			if ownership, ok := strings.CutPrefix(line, "归属: "); ok {
-				words := strings.Fields(ownership)
-				if len(words) > 0 && words[0] == string(machine.OwnerExecutor) && slices.Contains(words, "term="+terminal) {
-					registrations++
-				}
+			ownership, ok := strings.CutPrefix(line, "归属: "+string(machine.OwnerExecutor)+" ")
+			words := strings.Fields(ownership)
+			if ok && slices.Contains(words, "launch="+launch) {
+				registrations++
+				own = slices.Contains(words, "term="+terminal)
 			}
 		}
 		receipt, ok := strings.CutPrefix(comment.Body, LaunchModePrefix)
 		words := strings.Fields(receipt)
-		if !ok || comment.Source != task.SourceDriver || !slices.Contains(words, "term="+terminal) {
+		if !ok || comment.Source != task.SourceDriver || !slices.Contains(words, "launch="+launch) {
 			continue
 		}
 		for _, value := range []string{"auto", "manual"} {
@@ -182,14 +159,14 @@ func launchedMode(comments []task.Comment, terminal string) string {
 			}
 		}
 	}
-	if registrations != 1 {
+	if registrations != 1 || !own {
 		return ""
 	}
 	return mode
 }
 
-// LaunchModePrefix starts the scheduler's receipt that binds the AGENT_MODE it
-// tracked at launch to the executor terminal it created.
+// LaunchModePrefix starts the scheduler's receipt of the AGENT_MODE it tracked
+// when it launched an executor under a single-use launch name.
 const LaunchModePrefix = "派工档位: "
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and

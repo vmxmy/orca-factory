@@ -96,7 +96,7 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
 			e, o, tools, recovery, ledger, ticket := recoveryFixture(t)
-			e.Dispatched = true
+			e.Launch, e.LaunchReceipts = "launch_one", true
 			ledger.comments = []string{launchReceipt(tc.mode)}
 			ticket.Scope = "unit/change.go"
 			face := "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
@@ -142,7 +142,7 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 }
 
 func launchReceipt(mode string) string {
-	return "派工档位: term=term_exec attempt=1 mode=" + mode
+	return "派工档位: launch=launch_one attempt=1 mode=" + mode
 }
 
 func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
@@ -152,8 +152,8 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 	launched := func(mode string, more ...string) []string {
 		return append([]string{claim, launchReceipt(mode)}, more...)
 	}
-	const registered = "阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_one attempt=1 since=2026-10-05T05:59:30Z"
-	otherTerminal := "派工档位: term=term_other attempt=1 mode=auto"
+	const registered = "阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_one attempt=1 since=2026-10-05T05:59:30Z launch=launch_one"
+	otherLaunch := "派工档位: launch=launch_two attempt=1 mode=auto"
 	verified := func(mode string) func(context.Context) (string, error) {
 		return func(context.Context) (string, error) { return mode, nil }
 	}
@@ -171,25 +171,28 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 		{"dispatched auto after two approvals", launched("auto", approvals...), verified("manual"), false, sibling, resolver},
 		{"dispatched manual outranks checkout", launched("manual"), verified("auto"), false, sibling, whitelist},
 		{"dispatched manual rejects auto paths", launched("manual"), verified("auto"), false, docs, resolver},
-		{"relaunch replaces the failed launch", []string{claim, otherTerminal, launchReceipt("manual")}, verified("auto"), false, docs, resolver},
+		{"relaunch replaces the failed launch", []string{claim, otherLaunch, launchReceipt("manual")}, verified("auto"), false, docs, resolver},
 		{"dispatched without receipt", []string{claim}, verified("auto"), false, docs, resolver},
-		{"dispatched with another terminal's receipt", []string{claim, otherTerminal}, verified("auto"), false, sibling, resolver},
-		{"dispatched twice in one terminal", launched("auto", registered), verified("auto"), false, docs, resolver},
+		{"dispatched with another launch's receipt", []string{claim, otherLaunch}, verified("auto"), false, sibling, resolver},
+		{"launch name used twice", launched("auto", registered), verified("auto"), false, docs, resolver},
 		{"operator start in auto repository", nil, verified("auto"), true, docs, autoRule},
 		{"operator start in auto repository after two approvals", approvals, verified("auto"), true, sibling, resolver},
 		{"operator start in manual repository keeps whitelist", nil, verified("manual"), true, sibling, whitelist},
 		{"operator start in manual repository rejects auto paths", nil, verified("manual"), true, docs, resolver},
 		{"operator start on an undelivered claim", []string{claim}, verified("manual"), true, docs, resolver},
-		{"operator start beside another launch", []string{claim, otherTerminal}, verified("manual"), true, docs, resolver},
+		{"operator start beside another launch", []string{claim, otherLaunch}, verified("manual"), true, docs, resolver},
 		{"operator start unverified", []string{claim}, unverified, true, sibling, resolver},
 		{"operator start without verifier", nil, nil, true, sibling, resolver},
-		{"operator restart in the launched terminal", launched("auto", registered), verified("manual"), true, docs, resolver},
-		{"operator restart unverified", launched("manual", registered), unverified, true, sibling, resolver},
+		{"operator restart after a launch", launched("auto", registered), verified("manual"), true, docs, resolver},
+		{"operator restart after a launch unverified", launched("manual", registered), unverified, true, sibling, resolver},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "1")
 			e, o, _, _, ledger, ticket := recoveryFixture(t)
-			e.Dispatched, e.VerifyMode = !tc.operator, tc.verify
+			e.VerifyMode = tc.verify
+			if !tc.operator {
+				e.Launch, e.LaunchReceipts = "launch_one", true
+			}
 			ticket.Scope = "unit/change.go"
 			const face = "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
 			store := &scopeIssues{budgetIssues: ledger, description: face}
@@ -219,40 +222,16 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 	}
 }
 
-func TestWorkerScopeBlockedAwaitsLaunchReceipt(t *testing.T) {
-	t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
-	e, o, _, _, ledger, ticket := recoveryFixture(t)
-	e.Dispatched = true
-	e.VerifyMode = func(context.Context) (string, error) { return "manual", nil }
-	e.Sleep = func(_ context.Context, wait time.Duration) error {
-		if wait == launchReceiptInterval {
-			ledger.comments = append(ledger.comments, launchReceipt("auto"))
-		}
-		return nil
-	}
-	ticket.Scope = "unit/change.go"
-	store := &scopeIssues{budgetIssues: ledger, description: "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"}
-	e.Issues = store
-	o.failFirst = true
-	o.failBody = "SCOPE-BLOCKED: docs/system-manual.md"
-	result, err := e.Execute(t.Context(), ticket)
-	if err != nil || result.State.Corrections != 1 || !strings.Contains(store.description, "unit/change.go docs/system-manual.md") {
-		t.Fatalf("err=%v state=%+v face=%q", err, result.State, store.description)
-	}
-}
-
-func TestBindModeTrustsReceiptsOnlyOnFeishu(t *testing.T) {
-	for _, tc := range []struct {
-		backend          string
-		dispatched, want bool
-	}{{"feishu", true, true}, {"feishu", false, false}, {"github", true, false}} {
-		var e Executor
-		e.bindMode("/repo", tc.backend, tc.dispatched, func(_ context.Context, repo, backend string) (string, error) {
-			return repo + " " + backend, nil
-		})
-		mode, err := e.VerifyMode(t.Context())
-		if e.Dispatched != tc.want || err != nil || mode != "/repo "+tc.backend {
-			t.Fatalf("%+v: dispatched=%v mode=%q err=%v", tc, e.Dispatched, mode, err)
+func TestScopeModeNeedsAnAuthenticatedLedger(t *testing.T) {
+	e, _, _, _, ledger, ticket := recoveryFixture(t)
+	e.Issues = &scopeIssues{budgetIssues: ledger}
+	ledger.comments = []string{launchReceipt("auto"), "归属: 执行器 term=term_exec run=run_one attempt=1 launch=launch_one"}
+	e.VerifyMode = func(context.Context) (string, error) { return "auto", nil }
+	for _, authenticated := range []bool{true, false} {
+		e.Launch, e.LaunchReceipts = "launch_one", authenticated
+		mode, err := e.scopeMode(t.Context(), ticket, "term_exec")
+		if err != nil || (mode == "auto") != authenticated {
+			t.Fatalf("authenticated=%v mode=%q err=%v", authenticated, mode, err)
 		}
 	}
 }
@@ -269,26 +248,34 @@ func TestLaunchedModeTrustsOnlyDriverReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	const terminal = "term_fdf45555-3378-4ca8-99b1-6200fc3106fc"
-	const registration = "归属: 执行器 term=" + terminal + " run=run_c2d32709f17c attempt=1"
-	history := envelope.Data.Issue.Comments.Nodes
+	const recordedRegistration = "归属: 执行器 term=" + terminal + " run=run_c2d32709f17c attempt=1 since=2026-10-05T14:08:40Z"
+	const registration = recordedRegistration + " launch=launch_one"
 	event := func(source, body string) task.Comment { return task.Comment{Source: source, Body: body} }
-	receipt := "派工档位: term=" + terminal + " attempt=1 mode=auto"
+	history := slices.Clone(envelope.Data.Issue.Comments.Nodes)
+	for i := range history {
+		history[i].Body = strings.Replace(history[i].Body, recordedRegistration, registration, 1)
+	}
+	receipt := launchReceipt("auto")
 	for _, tc := range []struct {
-		name   string
-		events []task.Comment
-		want   string
+		name     string
+		history  []task.Comment
+		events   []task.Comment
+		terminal string
+		want     string
 	}{
-		{"driver receipt", []task.Comment{event(task.SourceDriver, receipt)}, "auto"},
-		{"no receipt", nil, ""},
-		{"operator event", []task.Comment{event(task.SourceOperator, receipt)}, ""},
-		{"event without source", []task.Comment{event("", receipt)}, ""},
-		{"quoted in another event", []task.Comment{event(task.SourceDriver, "阶段: gate\n"+receipt)}, ""},
-		{"another terminal", []task.Comment{event(task.SourceDriver, "派工档位: term=term_other attempt=1 mode=auto")}, ""},
-		{"unknown mode", []task.Comment{event(task.SourceDriver, "派工档位: term="+terminal+" attempt=1 mode=turbo")}, ""},
-		{"registered twice", []task.Comment{event(task.SourceDriver, receipt), event(task.SourceDriver, registration)}, ""},
+		{"driver receipt", history, []task.Comment{event(task.SourceDriver, receipt)}, terminal, "auto"},
+		{"recorded registration without launch", envelope.Data.Issue.Comments.Nodes, []task.Comment{event(task.SourceDriver, receipt)}, terminal, ""},
+		{"no receipt", history, nil, terminal, ""},
+		{"operator event", history, []task.Comment{event(task.SourceOperator, receipt)}, terminal, ""},
+		{"event without source", history, []task.Comment{event("", receipt)}, terminal, ""},
+		{"quoted in another event", history, []task.Comment{event(task.SourceDriver, "阶段: gate\n"+receipt)}, terminal, ""},
+		{"another launch", history, []task.Comment{event(task.SourceDriver, "派工档位: launch=launch_two attempt=1 mode=auto")}, terminal, ""},
+		{"unknown mode", history, []task.Comment{event(task.SourceDriver, launchReceipt("turbo"))}, terminal, ""},
+		{"another terminal", history, []task.Comment{event(task.SourceDriver, receipt)}, "term_other", ""},
+		{"registered twice", history, []task.Comment{event(task.SourceDriver, receipt), event(task.SourceDriver, registration)}, terminal, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := launchedMode(slices.Concat(history, tc.events), terminal); got != tc.want {
+			if got := launchedMode(slices.Concat(tc.history, tc.events), "launch_one", tc.terminal); got != tc.want {
 				t.Fatalf("mode=%q, want %q", got, tc.want)
 			}
 		})

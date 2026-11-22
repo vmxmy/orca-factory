@@ -157,7 +157,7 @@ func TestGitHubIsolatedPipelineEndToEnd(t *testing.T) {
 	if err = s.Tick(ctx); err != nil {
 		t.Fatalf("claim and launch tick: %v", err)
 	}
-	if len(schedOrca.launches) != 1 || !strings.Contains(schedOrca.launches[0].Command, " exec --dispatched 'ENG-1'") {
+	if len(schedOrca.launches) != 1 || !strings.Contains(schedOrca.launches[0].Command, " exec --dispatched ") {
 		t.Fatalf("launch: %+v", schedOrca.launches)
 	}
 	if len(results) != 1 || results[0].State.Owner != machine.OwnerMerge || results[0].State.Phase != machine.PhaseMergeQueue {

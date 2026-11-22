@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,14 +23,14 @@ import (
 func init() { Register("exec", execTicket) }
 func execTicket(args []string) int {
 	repo := executorLogRepository()
-	id, merging, dispatched, valid := "", false, false, false
+	id, launch, merging, valid := "", "", false, false
 	switch {
 	case len(args) == 1 && logComponent.MatchString(args[0]):
 		id, valid = args[0], true
 	case len(args) == 2 && args[0] == "--merging" && logComponent.MatchString(args[1]):
 		id, merging, valid = args[1], true, true
-	case len(args) == 2 && args[0] == "--dispatched" && logComponent.MatchString(args[1]):
-		id, dispatched, valid = args[1], true, true
+	case len(args) == 3 && args[0] == "--dispatched" && logComponent.MatchString(args[1]) && logComponent.MatchString(args[2]):
+		launch, id, valid = args[1], args[2], true
 	}
 	ticket := id
 	if !valid {
@@ -40,11 +39,11 @@ func execTicket(args []string) int {
 	return loggedCommand("executor", filepath.Join(logStateRoot(), repo, ticket, "executor.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
 		logger = logger.With("repo", repo, "ticket", ticket)
 		if !valid {
-			return 2, fmt.Errorf("usage: driver exec [--merging|--dispatched] <票号>")
+			return 2, fmt.Errorf("usage: driver exec [--merging | --dispatched <派工编号>] <票号>")
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging, dispatched, repositoryMode)
+		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging, launch, repositoryMode)
 		if err != nil {
 			return 1, err
 		}
@@ -54,21 +53,18 @@ func execTicket(args []string) int {
 	})
 }
 
-// repositoryMode is the AGENT_MODE of the checkout at root, whose tickets the
-// executor reads from backend, as the scheduler's next discovery would track it.
-// A Feishu repository discovery does not take over keeps a mode only the
-// scheduler knows, so it stays unverified here; the scheduler never tracks
-// another backend, whose profile alone sets the mode.
-func repositoryMode(ctx context.Context, root, backend string) (string, error) {
-	if backend != "feishu" {
+// repositoryMode is the AGENT_MODE of the checkout at root, whose executor is
+// bound to ledger, as the scheduler's next discovery would track it. A Feishu
+// repository discovery does not take over keeps a mode only the scheduler knows,
+// so it stays unverified here; the scheduler never tracks another backend, whose
+// profile alone sets the mode.
+func repositoryMode(ctx context.Context, root string, ledger map[string]string) (string, error) {
+	if ledger["AGENT_ISSUE_BACKEND"] != "feishu" {
 		profile, err := config.LoadRepository(root)
 		if err != nil {
 			return "", err
 		}
-		if profile.Env["AGENT_ISSUE_BACKEND"] != backend {
-			return "", errors.New("repository profile names another issue backend")
-		}
-		return cmp.Or(profile.Env["AGENT_MODE"], "manual"), nil
+		return ledgerMode(profile, ledger)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -84,28 +80,36 @@ func repositoryMode(ctx context.Context, root, backend string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return eligibleMode(result, root)
+	return eligibleMode(result, root, ledger)
 }
 
-func eligibleMode(result projects.Result, root string) (string, error) {
+func eligibleMode(result projects.Result, root string, ledger map[string]string) (string, error) {
 	root, err := physicalPath(root)
 	if err != nil {
 		return "", err
 	}
-	mode, found := "", false
+	var matches []config.Repository
 	for _, p := range result.Eligible {
-		if !resolvesTo(p.Path, root) {
-			continue
+		if resolvesTo(p.Path, root) {
+			matches = append(matches, p.Repository)
 		}
-		if found {
-			return "", errors.New("repository path is registered more than once")
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("repository is taken over at %d registered paths, want one", len(matches))
+	}
+	return ledgerMode(matches[0], ledger)
+}
+
+// ledgerMode refuses a profile that names a ledger other than the bound one. Keys
+// the profile leaves out came from the executor's environment.
+func ledgerMode(repo config.Repository, ledger map[string]string) (string, error) {
+	for _, key := range config.LedgerIdentityKeys {
+		bound, compared := ledger[key]
+		if named, ok := repo.Env[key]; ok && compared && named != bound {
+			return "", fmt.Errorf("%s no longer names the bound ledger", key)
 		}
-		mode, found = cmp.Or(p.Repository.Env["AGENT_MODE"], "manual"), true
 	}
-	if !found {
-		return "", errors.New("repository is not taken over")
-	}
-	return mode, nil
+	return cmp.Or(repo.Env["AGENT_MODE"], "manual"), nil
 }
 
 var logComponent = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
