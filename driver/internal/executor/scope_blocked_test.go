@@ -90,6 +90,7 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 		{name: "manual docs", mode: "manual", files: docs},
 		{name: "auto overridden manual", mode: "auto", gear: "manual", files: docs},
 		{name: "manual overridden auto", mode: "manual", gear: "auto", files: docs, approved: true},
+		{name: "invalid gear defaults to manual", mode: "auto", gear: "invalid", files: docs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")

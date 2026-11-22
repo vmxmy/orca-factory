@@ -583,7 +583,7 @@ orca-factory-driver gear clear OF
 
 手动用 `gear set` 切到 `auto` 同样不补处理已转人的历史票，也不提供按票切换。`config [--json]` 的 `routing` 显示生效的 `AGENT_MODE` 与来源，`roles` 的 `resolver_top` 显示 `AGENT_ROLE_RESOLVER_TOP` 终审档位，未配置终审档位时省略该角色。
 
-执行器在启动时读取仓库 `AGENT_MODE`，以飞书项目键 `AGENT_FEISHU_PROJECT` 读取本机 gear 覆盖，缺省为 `manual`。手工运行 `driver exec` 也使用此生效模式，启动后不热加载配置或 gear。
+执行器在启动时读取仓库 `AGENT_MODE`，以飞书项目键 `AGENT_FEISHU_PROJECT` 读取本机 gear 覆盖。模式读取失败或值不是 `auto` 时，执行器按 `manual` 运行。手工运行 `driver exec` 也使用此生效模式，启动后不热加载配置或 gear。
 
 `auto` 模式也在 worker 报告有效的 `SCOPE-BLOCKED` 时当场判断扩 SCOPE：每次最多 10 个路径，不命中 lane 3 或控制文件，且没有冻结合并 spec，沿用处置阶段的票面与合并证据校验。批准后写审计并进入 correction，拒绝则转处置 Agent。worker 的 `扩SCOPE：worker-auto ` 与处置的 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 合计每票最多 2 次。
 
