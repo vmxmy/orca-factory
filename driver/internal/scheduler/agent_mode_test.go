@@ -37,57 +37,40 @@ func modeRuntime(store issues.Store, env map[string]string) *Runtime {
 	return &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 }
 
-func TestLaunchPassesTrackedAgentMode(t *testing.T) {
-	for _, tc := range []struct {
-		name, mode string
-		merging    bool
-		command    string
-		title      string
-	}{
-		{"tracked auto", "auto", false, "exec '/driver' exec --auto 'ENG-1'", "driver exec ENG-1"},
-		{"tracked manual with auto on disk", "manual", false, "exec '/driver' exec 'ENG-1'", "driver exec ENG-1"},
-		{"merging tracked auto", "auto", true, "exec '/driver' exec --merging --auto 'ENG-1'", "driver exec --merging ENG-1"},
+func TestClaimRecordsTrackedAgentMode(t *testing.T) {
+	for _, tc := range []struct{ name, tracked, disk, want string }{
+		{"tracked auto with manual on disk", "auto", "manual", "auto"},
+		{"tracked manual with auto on disk", "manual", "auto", "manual"},
+		{"tracked default with auto on disk", "", "auto", "manual"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := t.TempDir()
-			if tc.mode == "manual" {
-				envFile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
-				if err := os.MkdirAll(filepath.Dir(envFile), 0700); err != nil {
+		for _, kind := range []ActionKind{Claim, Resume} {
+			t.Run(tc.name+"/"+string(kind), func(t *testing.T) {
+				repo := t.TempDir()
+				gates := filepath.Join(repo, "scripts", "agent-gates")
+				if err := os.MkdirAll(gates, 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(envFile, []byte("AGENT_MODE=auto\n"), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(gates, "agent-graph.env"), []byte("AGENT_MODE="+tc.disk+"\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
-			}
-			bodies := []string{"阶段: 写 correction\n归属: 执行器 term=- run=- attempt=0"}
-			if tc.merging {
-				bodies = append(bodies, merge.HandoffPrefix+`{"queue_id":"q1"}`, merge.ProgressPrefix+`{"queue_id":"q1","phase":"correction"}`)
-			}
-			comments := evidenceComments(bodies...)
-			oc := &fakeOrca{}
-			r := &Runtime{
-				Clients:      map[string]issues.Store{repo: &fakeIssues{issueComments: comments}},
-				Repositories: map[string]config.Repository{repo: {Path: repo, Env: map[string]string{"AGENT_MODE": tc.mode}}},
-				Orca:         oc,
-				DriverPath:   "/driver",
-			}
-			if err := r.Launch(t.Context(), fromEvidence(t, Ticket{Identifier: "ENG-1", Repo: repo}, comments)); err != nil {
-				t.Fatal(err)
-			}
-			if len(oc.launches) != 1 {
-				t.Fatalf("got %d terminal launches, want 1", len(oc.launches))
-			}
-			launch := oc.launches[0]
-			if !strings.HasPrefix(launch.Command, tc.command) {
-				t.Errorf("command = %q, want prefix %q", launch.Command, tc.command)
-			}
-			if tc.mode == "manual" && strings.Contains(launch.Command, "--auto") {
-				t.Errorf("manual launch contains --auto: %q", launch.Command)
-			}
-			if launch.Title != tc.title {
-				t.Errorf("title = %q, want %q", launch.Title, tc.title)
-			}
-		})
+				env := map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1"}
+				if tc.tracked != "" {
+					env["AGENT_MODE"] = tc.tracked
+				}
+				store := &fakeIssues{issues: []task.Issue{{ID: "id", Identifier: "ENG-1", Project: task.NamedID{ID: "p1"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
+				r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Path: repo, Env: env}}}
+				if err := r.Apply(t.Context(), Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, Action{Kind: kind, Attempt: 1, Phase: machine.PhaseWorker}); err != nil {
+					t.Fatal(err)
+				}
+				if len(store.comments) != 1 || !strings.HasSuffix(store.comments[0], " mode="+tc.want) {
+					t.Fatalf("claim = %q, want mode=%s", store.comments, tc.want)
+				}
+				var claimed Ticket
+				if err := readOwnership(&claimed, evidenceComments(store.comments...)); err != nil || claimed.Owner != machine.OwnerExecutor || claimed.Terminal != "-" || claimed.Attempt != 1 {
+					t.Fatalf("ownership = %+v err=%v", claimed, err)
+				}
+			})
+		}
 	}
 }
 

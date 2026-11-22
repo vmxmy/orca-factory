@@ -2,15 +2,19 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 func TestScopeBlockedReportGoesToResolverWithoutCorrection(t *testing.T) {
@@ -92,13 +96,13 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
 			e, o, tools, recovery, ledger, ticket := recoveryFixture(t)
-			e.Config.Mode = tc.mode
+			ledger.comments = []string{schedulerClaim(tc.mode)}
 			ticket.Scope = "unit/change.go"
 			face := "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
 			store := &scopeIssues{budgetIssues: ledger, description: face}
 			e.Issues = store
 			if tc.prior {
-				ledger.comments = []string{"扩SCOPE：auto 2026-11-21T00:00:00Z", "扩SCOPE：worker-auto 2026-11-21T01:00:00Z\n路径：docs/previous.md"}
+				ledger.comments = append(ledger.comments, "扩SCOPE：auto 2026-11-21T00:00:00Z", "扩SCOPE：worker-auto 2026-11-21T01:00:00Z\n路径：docs/previous.md")
 			}
 			initialComments := len(ledger.comments)
 			o.failFirst = true
@@ -136,28 +140,125 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 	}
 }
 
-func TestWorkerScopeBlockedAutoIgnoresWhitelist(t *testing.T) {
-	t.Setenv("AGENT_WORKER_AUTO_SCOPE", "1")
-	e, o, _, _, ledger, ticket := recoveryFixture(t)
-	e.Config.Mode = "auto"
-	ticket.Scope = "unit/change.go"
-	const face = "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
-	store := &scopeIssues{budgetIssues: ledger, description: face}
-	e.Issues = store
-	ledger.comments = []string{"扩SCOPE：auto 2026-11-21T00:00:00Z", "扩SCOPE：worker-auto 2026-11-21T01:00:00Z"}
-	o.failFirst = true
-	o.failBody = "SCOPE-BLOCKED: unit/change_test.go"
-	result, err := e.Execute(t.Context(), ticket)
-	if err != nil {
+func schedulerClaim(mode string) string {
+	return "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1 since=2026-10-05T05:59:00Z mode=" + mode
+}
+
+func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
+	const docs, sibling = "docs/system-manual.md", "unit/change_test.go"
+	approvals := []string{"扩SCOPE：auto 2026-11-21T00:00:00Z", "扩SCOPE：worker-auto 2026-11-21T01:00:00Z"}
+	autoClaim, manualClaim := schedulerClaim("auto"), schedulerClaim("manual")
+	registered := "阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_one attempt=1 since=2026-10-05T05:59:30Z"
+	verified := func(mode string) func(context.Context) (string, error) {
+		return func(context.Context) (string, error) { return mode, nil }
+	}
+	unverified := func(context.Context) (string, error) { return "", errors.New("repository is not taken over") }
+	const autoRule, whitelist, resolver = "扩SCOPE：worker-auto ", "自动扩 SCOPE：", ""
+	for _, tc := range []struct {
+		name     string
+		comments []string
+		verify   func(context.Context) (string, error)
+		files    string
+		want     string
+	}{
+		{"dispatched auto outranks checkout", []string{autoClaim}, verified("manual"), docs, autoRule},
+		{"dispatched auto after two approvals", append([]string{autoClaim}, approvals...), verified("manual"), sibling, resolver},
+		{"dispatched manual outranks checkout", []string{manualClaim}, verified("auto"), sibling, whitelist},
+		{"dispatched manual rejects auto paths", []string{manualClaim}, verified("auto"), docs, resolver},
+		{"operator start in auto repository", nil, verified("auto"), docs, autoRule},
+		{"operator start in auto repository after two approvals", approvals, verified("auto"), sibling, resolver},
+		{"operator start in manual repository keeps whitelist", nil, verified("manual"), sibling, whitelist},
+		{"operator start in manual repository rejects auto paths", nil, verified("manual"), docs, resolver},
+		{"operator start unverified", nil, unverified, sibling, resolver},
+		{"operator start without verifier", nil, nil, sibling, resolver},
+		{"operator resume agrees with receipt", []string{autoClaim, registered}, verified("auto"), docs, autoRule},
+		{"operator resume after switch to manual", []string{autoClaim, registered}, verified("manual"), sibling, resolver},
+		{"operator resume after switch to auto", []string{manualClaim, registered}, verified("auto"), docs, resolver},
+		{"operator resume unverified", []string{manualClaim, registered}, unverified, sibling, resolver},
+		{"claim without mode", []string{strings.TrimSuffix(autoClaim, " mode=auto")}, unverified, sibling, resolver},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "1")
+			e, o, _, _, ledger, ticket := recoveryFixture(t)
+			e.VerifyMode = tc.verify
+			ticket.Scope = "unit/change.go"
+			const face = "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
+			store := &scopeIssues{budgetIssues: ledger, description: face}
+			e.Issues = store
+			ledger.comments = slices.Clone(tc.comments)
+			o.failFirst = true
+			o.failBody = "SCOPE-BLOCKED: " + tc.files
+			result, err := e.Execute(t.Context(), ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			written := strings.Join(ledger.comments[len(tc.comments):], "\n")
+			if tc.want == resolver {
+				if store.description != face || result.State.Phase != machine.PhaseResolver || result.State.Corrections != 0 || strings.Contains(written, autoRule) || strings.Contains(written, whitelist) {
+					t.Fatalf("face=%q state=%+v comments=%q", store.description, result.State, written)
+				}
+				return
+			}
+			other := autoRule
+			if tc.want == autoRule {
+				other = whitelist
+			}
+			if !strings.Contains(store.description, "unit/change.go "+tc.files) || result.State.Corrections != 1 || strings.Count(written, tc.want) != 1 || strings.Contains(written, other) {
+				t.Fatalf("face=%q state=%+v comments=%q", store.description, result.State, written)
+			}
+		})
+	}
+}
+
+func TestClaimedModeTrustsOnlyTheCurrentClaim(t *testing.T) {
+	registration := task.Comment{Body: "归属: 执行器 term=term_exec run=run_one attempt=1"}
+	claim := task.Comment{Body: schedulerClaim("auto")}
+	operator := task.Comment{Source: task.SourceOperator, Body: schedulerClaim("auto")}
+	released := task.Comment{Body: "阶段: 未认领\n归属: 无"}
+	for _, tc := range []struct {
+		name       string
+		comments   []task.Comment
+		mode       string
+		dispatched bool
+	}{
+		{"dispatched", []task.Comment{claim, registration}, "auto", true},
+		{"operator event", []task.Comment{operator, registration}, "", false},
+		{"released claim", []task.Comment{claim, released, registration}, "", false},
+		{"another terminal", []task.Comment{claim, {Body: "归属: 执行器 term=term_other run=run_one attempt=1"}}, "auto", false},
+		{"another run", []task.Comment{claim, {Body: "归属: 执行器 term=term_exec run=run_two attempt=1"}}, "auto", false},
+		{"newer claim", []task.Comment{claim, registration, {Body: schedulerClaim("manual")}}, "manual", false},
+		{"unknown mode", []task.Comment{{Body: schedulerClaim("turbo")}, registration}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if mode, dispatched := claimedMode(tc.comments, "term_exec", "run_one"); mode != tc.mode || dispatched != tc.dispatched {
+				t.Fatalf("mode=%q dispatched=%v", mode, dispatched)
+			}
+		})
+	}
+}
+
+func TestRecordedClaimCarriesMode(t *testing.T) {
+	var envelope struct {
+		Data struct {
+			Issue struct {
+				Comments struct{ Nodes []task.Comment }
+			}
+		}
+	}
+	if err := json.Unmarshal(recorded(t, "linear-comments-executor-handoff.json"), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if store.description != face {
-		t.Errorf("ticket SCOPE changed: %q", store.description)
+	const terminal, run = "term_fdf45555-3378-4ca8-99b1-6200fc3106fc", "run_c2d32709f17c"
+	const claim = "归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1 since=2026-10-05T14:08:34Z"
+	comments := envelope.Data.Issue.Comments.Nodes
+	if mode, dispatched := claimedMode(comments, terminal, run); mode != "" || dispatched {
+		t.Fatalf("recorded claim without mode: mode=%q dispatched=%v", mode, dispatched)
 	}
-	if result.State.Phase != machine.PhaseResolver || result.State.Corrections != 0 {
-		t.Errorf("phase = %s, corrections = %d", result.State.Phase, result.State.Corrections)
+	derived := slices.Clone(comments)
+	for i := range derived {
+		derived[i].Body = strings.Replace(derived[i].Body, claim, claim+" mode=auto", 1)
 	}
-	if strings.Contains(strings.Join(ledger.comments, "\n"), "自动扩 SCOPE：") {
-		t.Error("manual whitelist approved the request after two auto approvals")
+	if mode, dispatched := claimedMode(derived, terminal, run); mode != "auto" || !dispatched {
+		t.Fatalf("recorded claim with mode: mode=%q dispatched=%v", mode, dispatched)
 	}
 }

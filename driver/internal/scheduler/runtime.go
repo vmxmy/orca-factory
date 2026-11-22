@@ -645,6 +645,13 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 		return errors.New("invalid scheduler action")
 	}
 	body := fmt.Sprintf("阶段: %s\n归属: %s term=- run=- attempt=%d scheduler-attempt=%d since=%s", a.Phase, owner, a.Attempt, a.Attempt, now.UTC().Format(time.RFC3339))
+	if a.Kind == Claim || a.Kind == Resume {
+		mode := "manual"
+		if autoMode(r.Repositories[t.Repo].Env) {
+			mode = "auto"
+		}
+		body += " mode=" + mode
+	}
 	if a.Kind == Resolve {
 		if t.Run != "" {
 			body = strings.Replace(body, " run=- ", " run="+t.Run+" ", 1)
@@ -701,11 +708,7 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	if r.orcaFailures >= orcaRuntimeFailureThreshold {
 		return &terminalCreateRuntimeError{err: errOrcaRuntimePaused, ticket: t, failures: r.orcaFailures}
 	}
-	mode := ""
-	if verb != " resolve " && autoMode(r.Repositories[t.Repo].Env) {
-		mode = "--auto "
-	}
-	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + mode + quote(t.Identifier) + launchLog(t.Identifier)})
+	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
 		var rejected *orca.RejectedError
 		if errors.As(err, &rejected) && rejected.Code == "runtime_error" {

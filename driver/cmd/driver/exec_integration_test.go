@@ -9,7 +9,44 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/projects"
 )
+
+func TestEligibleMode(t *testing.T) {
+	root, other := t.TempDir(), t.TempDir()
+	link := filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	project := func(path, mode string) projects.Project {
+		env := map[string]string{}
+		if mode != "" {
+			env["AGENT_MODE"] = mode
+		}
+		return projects.Project{Path: path, Repository: config.Repository{Path: path, Env: env}}
+	}
+	rejected := project(root, "auto").Repository
+	for _, tc := range []struct {
+		name   string
+		result projects.Result
+		want   string
+	}{
+		{"auto", projects.Result{Eligible: []projects.Project{project(other, "manual"), project(link, "auto")}}, "auto"},
+		{"manual", projects.Result{Eligible: []projects.Project{project(other, "auto"), project(root, "manual")}}, "manual"},
+		{"default", projects.Result{Eligible: []projects.Project{project(root, "")}}, "manual"},
+		{"rejected", projects.Result{Eligible: []projects.Project{project(other, "auto")}, Rejected: []projects.Rejection{{Path: root, Repository: &rejected}}}, ""},
+		{"ambiguous", projects.Result{Eligible: []projects.Project{project(root, "auto"), project(link, "manual")}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mode, err := eligibleMode(tc.result, root)
+			if mode != tc.want || (err != nil) != (tc.want == "") {
+				t.Fatalf("mode=%q err=%v, want %q", mode, err, tc.want)
+			}
+		})
+	}
+}
 
 func TestExecCompatibility(t *testing.T) {
 	for _, tc := range []struct {
@@ -21,10 +58,8 @@ func TestExecCompatibility(t *testing.T) {
 		{"empty", []string{"exec"}, 2, "unknown"},
 		{"ordinary", []string{"exec", "ENG-1"}, 1, "ENG-1"},
 		{"merging", []string{"exec", "--merging", "ENG-1"}, 1, "ENG-1"},
-		{"auto", []string{"exec", "--auto", "ENG-1"}, 1, "ENG-1"},
-		{"merging auto", []string{"exec", "--merging", "--auto", "ENG-1"}, 1, "ENG-1"},
-		{"auto missing ticket", []string{"exec", "--auto"}, 2, "unknown"},
 		{"missing ticket", []string{"exec", "--merging"}, 2, "unknown"},
+		{"operator mode", []string{"exec", "--auto", "ENG-1"}, 2, "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()

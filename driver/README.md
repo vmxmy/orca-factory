@@ -152,7 +152,7 @@ orca-factory-driver status --json
 
 `manual` 模式且未启用安全文件开关时，worker 报告缺 SCOPE 外文件不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
 
-调度器按跟踪的仓库档位派发 `driver exec`，档位为 `auto` 时传入 `--auto`。被拒但仍有在途票的仓库也使用其跟踪档位。执行器沿用派发时的值。手工运行 `driver exec` 时省略 `--auto` 即按 `manual` 执行。生效档位为 `auto` 时，执行器对有效的 `SCOPE-BLOCKED` 申请直接使用处置阶段的确定性规则，无需 `resolver-state` 记录，也无需启用 `AGENT_WORKER_AUTO_SCOPE`。申请每次最多 10 个仓库内字面路径，不得命中 lane 3 或控制文件；worker、普通处置和终审合计每票最多自动批准 2 次。票未取消、具有 SCOPE 和 LANE 预判、合并证据有效、部署屏障未暂停，且没有冻结的合并 spec，才能批准。控制文件排除规则与下方自动扩 SCOPE 一节相同，任何条件不满足都整批转处置 Agent。
+扩 SCOPE 按仓库的 `AGENT_MODE` 审批，`driver exec` 没有指定档位的参数。调度器认领或重启执行器时，把跟踪的仓库档位写进该轮 `归属:` 行的 `mode=`；被拒但仍有在途票的仓库也使用其跟踪档位。由调度器派发的执行器从账本回读这一值。手工启动或恢复的 `driver exec` 在审批时重新发现项目并读取本仓库的当前档位；本轮 `归属:` 行已有 `mode=` 时，两者必须一致。仓库当前不可接管、发现失败或两者不一致时，档位未核实，申请整批转处置 Agent，也不使用下面的白名单。生效档位为 `auto` 时，执行器对有效的 `SCOPE-BLOCKED` 申请直接使用处置阶段的确定性规则，无需 `resolver-state` 记录，也无需启用 `AGENT_WORKER_AUTO_SCOPE`。申请每次最多 10 个仓库内字面路径，不得命中 lane 3 或控制文件；worker、普通处置和终审合计每票最多自动批准 2 次。票未取消、具有 SCOPE 和 LANE 预判、合并证据有效、部署屏障未暂停，且没有冻结的合并 spec，才能批准。控制文件排除规则与下方自动扩 SCOPE 一节相同，任何条件不满足都整批转处置 Agent。
 
 批准时先写一条 `扩SCOPE：worker-auto <RFC3339>` 审计评论，附条件、批准次数与路径，再更新票面、简报和 gate spec，通过 `workerScopeExtended` 进入 correction。该评论计入处置阶段的批准上限，但不含归属、阶段或 `resolver-state` 行。正常重试遇到票面已包含的路径不重复写入。读写失败停止执行，写入故障窗口沿用已有 worker 扩展流程。
 
@@ -583,7 +583,7 @@ orca-factory-driver gear clear OF
 
 手动用 `gear set` 切到 `auto` 同样不补处理已转人的历史票，也不提供按票切换。`config [--json]` 的 `routing` 显示生效的 `AGENT_MODE` 与来源，`roles` 的 `resolver_top` 显示 `AGENT_ROLE_RESOLVER_TOP` 终审档位，未配置终审档位时省略该角色。
 
-worker 报告有效的 `SCOPE-BLOCKED` 时，执行器沿用派发时的档位。调度器只在跟踪的仓库档位为 `auto` 时传入 `--auto`，被拒仓库的在途票也适用。手工运行时省略 `--auto` 即按 `manual` 执行。生效档位为 `auto` 时，执行器当场判断扩 SCOPE。每次最多 10 个路径，不命中 lane 3 或控制文件，且没有冻结合并 spec，沿用处置阶段的票面与合并证据校验。批准后写审计并进入 correction，拒绝则转处置 Agent。worker 的 `扩SCOPE：worker-auto ` 与处置的 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 合计每票最多 2 次。
+worker 报告有效的 `SCOPE-BLOCKED` 时，执行器按调度器认领时记录的档位审批；手工启动或恢复的执行器先核实仓库当前档位，核实不了就转处置 Agent。生效档位为 `auto` 时，执行器当场判断扩 SCOPE。每次最多 10 个路径，不命中 lane 3 或控制文件，且没有冻结合并 spec，沿用处置阶段的票面与合并证据校验。批准后写审计并进入 correction，拒绝则转处置 Agent。worker 的 `扩SCOPE：worker-auto ` 与处置的 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 合计每票最多 2 次。
 
 `auto` 隐含 `AGENT_AUTO_REVIEW` 的 `scope`、`release`、`top`，与显式开关取并集。`auto` 下票的归属不会变成 `人`，也不发转人卡片：
 

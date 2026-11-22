@@ -66,7 +66,7 @@ type Config struct {
 	// Merging requires durable correction evidence; it never authorizes a fresh run.
 	Merging                                                             bool
 	Lane3Globs                                                          []string
-	Machine, Mode                                                       string
+	Machine                                                             string
 	TierSettings                                                        map[string]string
 	WorkerSkills                                                        []string
 	TierChain                                                           []string
@@ -93,6 +93,9 @@ type Executor struct {
 	// ProbeModel confirms a model error read from a worker's screen with one
 	// request; nil means modelhealth.Probe in the repository checkout.
 	ProbeModel func(context.Context, modelhealth.Ref) modelhealth.Status
+	// VerifyMode reads the repository's current AGENT_MODE for an executor the
+	// scheduler did not dispatch; nil leaves that mode unverified.
+	VerifyMode func(context.Context) (string, error)
 	// Stderr receives best-effort structured logs; nil means os.Stderr.
 	Stderr     io.Writer
 	logContext *slog.Logger
@@ -518,11 +521,16 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if scopeBlocked = scopeBlockedFiles(report.Body, spec); len(scopeBlocked) > 0 {
 				event = machine.EvWorkerScopeBlocked
 				if cp.MergeSpec == "" {
+					mode, modeErr := e.scopeMode(ctx, t, c.Terminal, result.RunID)
+					if modeErr != nil {
+						return result, modeErr
+					}
 					var extended bool
 					var extendErr error
-					if c.Mode == "auto" {
+					switch {
+					case mode == "auto":
 						extended, extendErr = intake.AutoApproveWorkerScope(ctx, e.Issues, t.ID, scopeBlocked, strings.Join(c.Lane3Globs, " "), e.Now())
-					} else if os.Getenv("AGENT_WORKER_AUTO_SCOPE") == "1" {
+					case mode == "manual" && os.Getenv("AGENT_WORKER_AUTO_SCOPE") == "1":
 						extended, extendErr = intake.ExtendWorkerScope(ctx, e.Issues, t.ID, t.Scope, scopeBlocked, strings.Join(c.Lane3Globs, " "))
 					}
 					if extendErr != nil {

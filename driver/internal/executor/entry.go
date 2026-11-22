@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,15 +17,18 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
-func RunTicket(ctx context.Context, identifier string, merging, auto bool) (result Result, err error) {
+// verifyMode reads the current AGENT_MODE of the repository at a path.
+func RunTicket(ctx context.Context, identifier string, merging bool, verifyMode func(context.Context, string) (string, error)) (result Result, err error) {
 	session, err := maintenance.Session()
 	if err != nil {
 		return Result{}, err
@@ -55,10 +59,7 @@ func RunTicket(ctx context.Context, identifier string, merging, auto bool) (resu
 		return Result{}, err
 	}
 	e.Config.Terminal = terminal
-	e.Config.Mode = "manual"
-	if auto {
-		e.Config.Mode = "auto"
-	}
+	e.VerifyMode = func(ctx context.Context) (string, error) { return verifyMode(ctx, repo) }
 	cfg, err := config.Load(home())
 	if err != nil {
 		return Result{}, errors.New("driver configuration could not be loaded")
@@ -96,6 +97,73 @@ func RunTicket(ctx context.Context, identifier string, merging, auto bool) (resu
 	delegated = true
 	e.Config.Merging = merging
 	return e.Start(ctx, ticket)
+}
+
+// scopeMode is the AGENT_MODE that governs a worker's scope request, or "" when
+// it cannot be verified and the request belongs to the resolver. The scheduler's
+// claim decides for the executor it dispatched. Any other start verifies the
+// repository's current mode, which must also agree with the claim it resumes.
+func (e *Executor) scopeMode(ctx context.Context, t Ticket, terminal, run string) (string, error) {
+	comments, err := e.Issues.ListComments(ctx, t.ID)
+	if err != nil {
+		return "", safeDependencyError(err)
+	}
+	claimed, dispatched := claimedMode(comments, terminal, run)
+	if dispatched {
+		return claimed, nil
+	}
+	if e.VerifyMode == nil {
+		return "", nil
+	}
+	current, err := e.VerifyMode(ctx)
+	if err != nil {
+		e.warn("%s repository mode unverified: %s", t.Identifier, logErrorSummary(err))
+		return "", nil
+	}
+	if claimed != "" && claimed != current {
+		e.warn("%s repository mode %s differs from its claim %s", t.Identifier, current, claimed)
+		return "", nil
+	}
+	return current, nil
+}
+
+// claimedMode reads the mode the scheduler recorded in the ticket's current
+// claim. dispatched reports that this terminal and Run registered directly after
+// that claim; a later registration under it is an operator's resume.
+func claimedMode(comments []task.Comment, terminal, run string) (mode string, dispatched bool) {
+	comments = slices.Clone(comments)
+	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
+	pending := false
+	for _, comment := range comments {
+		if !comment.CarriesProtocol() {
+			continue
+		}
+		for _, line := range strings.Split(comment.Body, "\n") {
+			ownership, ok := strings.CutPrefix(line, "归属: ")
+			if !ok {
+				continue
+			}
+			fields := map[string]string{}
+			words := strings.Fields(ownership)
+			for _, word := range words {
+				if key, value, ok := strings.Cut(word, "="); ok {
+					fields[key] = value
+				}
+			}
+			executor := len(words) > 0 && words[0] == string(machine.OwnerExecutor)
+			if executor && fields["term"] != "-" {
+				dispatched = pending && fields["term"] == terminal && fields["run"] == run
+				pending = false
+				continue
+			}
+			mode, dispatched = "", false
+			if executor && (fields["mode"] == "auto" || fields["mode"] == "manual") {
+				mode = fields["mode"]
+			}
+			pending = mode != ""
+		}
+	}
+	return mode, dispatched
 }
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and
