@@ -66,7 +66,7 @@ type Config struct {
 	// Merging requires durable correction evidence; it never authorizes a fresh run.
 	Merging                                                             bool
 	Lane3Globs                                                          []string
-	Machine                                                             string
+	Machine, Mode                                                       string
 	TierSettings                                                        map[string]string
 	WorkerSkills                                                        []string
 	TierChain                                                           []string

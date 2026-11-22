@@ -111,6 +111,32 @@ func TestExecReadsRepositoryEnvWithBash(t *testing.T) {
 	}
 }
 
+func TestExecReadsModeFromItsProfileSnapshot(t *testing.T) {
+	for _, tc := range []struct{ name, env, want string }{
+		{"evaluated", "chosen=auto\nAGENT_MODE=\"$chosen\"\n", "auto"},
+		{"manual", "AGENT_MODE=manual\n", "manual"},
+		{"inherited only", "", "manual"},
+		{"invalid", "AGENT_MODE=turbo\n", "turbo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("AGENT_MODE", "auto")
+			repo := t.TempDir()
+			path := filepath.Join(repo, "scripts/agent-gates/agent-graph.env")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\nAGENT_TIER_DEFAULT=codex::low\n"+tc.env), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			executor, _, err := repositoryExecutor(t.Context(), repo)
+			if err != nil || executor.Config.Mode != tc.want {
+				t.Fatalf("mode=%q err=%v, want %q", executor.Config.Mode, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestExecIgnoresInheritedProfileKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

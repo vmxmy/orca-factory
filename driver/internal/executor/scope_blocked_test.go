@@ -222,17 +222,31 @@ func TestWorkerScopeBlockedFollowsVerifiedMode(t *testing.T) {
 	}
 }
 
-func TestScopeModeNeedsAnAuthenticatedLedger(t *testing.T) {
-	e, _, _, _, ledger, ticket := recoveryFixture(t)
-	e.Issues = &scopeIssues{budgetIssues: ledger}
-	ledger.comments = []string{launchReceipt("auto"), "归属: 执行器 term=term_exec run=run_one attempt=1 launch=launch_one"}
-	e.VerifyMode = func(context.Context) (string, error) { return "auto", nil }
-	for _, authenticated := range []bool{true, false} {
-		e.Launch, e.LaunchReceipts = "launch_one", authenticated
-		mode, err := e.scopeMode(t.Context(), ticket, "term_exec")
-		if err != nil || (mode == "auto") != authenticated {
-			t.Fatalf("authenticated=%v mode=%q err=%v", authenticated, mode, err)
-		}
+func TestBindModeFollowsTheBoundLedger(t *testing.T) {
+	for _, tc := range []struct{ name, backend, launch, profile, want string }{
+		{"feishu dispatched", "feishu", "launch_one", "manual", "auto"},
+		{"feishu operator", "feishu", "", "auto", "discovered"},
+		{"github dispatched", "github", "launch_one", "auto", ""},
+		{"github operator auto", "github", "", "auto", "auto"},
+		{"github operator manual", "github", "", "manual", "manual"},
+		{"github operator invalid", "github", "", "turbo", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _, _, _, ledger, ticket := recoveryFixture(t)
+			e.Issues = &scopeIssues{budgetIssues: ledger}
+			ledger.comments = []string{launchReceipt("auto"), "归属: 执行器 term=term_exec run=run_one attempt=1 launch=launch_one"}
+			e.Launch, e.Config.Mode = tc.launch, tc.profile
+			bound := map[string]string{"AGENT_ISSUE_BACKEND": tc.backend}
+			e.bindMode("/repo", bound, func(_ context.Context, repo string, env map[string]string) (string, error) {
+				if repo != "/repo" || !reflect.DeepEqual(env, bound) {
+					t.Fatalf("verified %q %v", repo, env)
+				}
+				return "discovered", nil
+			})
+			if mode, err := e.scopeMode(t.Context(), ticket, "term_exec"); err != nil || mode != tc.want {
+				t.Fatalf("mode=%q err=%v, want %q", mode, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -271,6 +285,9 @@ func TestLaunchedModeTrustsOnlyDriverReceipts(t *testing.T) {
 		{"quoted in another event", history, []task.Comment{event(task.SourceDriver, "阶段: gate\n"+receipt)}, terminal, ""},
 		{"another launch", history, []task.Comment{event(task.SourceDriver, "派工档位: launch=launch_two attempt=1 mode=auto")}, terminal, ""},
 		{"unknown mode", history, []task.Comment{event(task.SourceDriver, launchReceipt("turbo"))}, terminal, ""},
+		{"revoked launch", history, []task.Comment{event(task.SourceDriver, receipt), event(task.SourceDriver, launchReceipt("revoked"))}, terminal, ""},
+		{"revocation ordered first", history, []task.Comment{event(task.SourceDriver, launchReceipt("revoked")), event(task.SourceDriver, receipt)}, terminal, ""},
+		{"superseded launch", history, []task.Comment{event(task.SourceDriver, receipt), event(task.SourceDriver, "派工档位: launch=launch_two attempt=2 mode=auto")}, terminal, ""},
 		{"another terminal", history, []task.Comment{event(task.SourceDriver, receipt)}, "term_other", ""},
 		{"registered twice", history, []task.Comment{event(task.SourceDriver, receipt), event(task.SourceDriver, registration)}, terminal, ""},
 	} {

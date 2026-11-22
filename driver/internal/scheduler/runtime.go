@@ -703,9 +703,9 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	if r.orcaFailures >= orcaRuntimeFailureThreshold {
 		return &terminalCreateRuntimeError{err: errOrcaRuntimePaused, ticket: t, failures: r.orcaFailures}
 	}
-	flags := ""
+	launch, flags := "", ""
 	if verb == " exec " {
-		launch := rand.Text()
+		launch = rand.Text()
 		mode := "manual"
 		if autoMode(r.Repositories[t.Repo].Env) {
 			mode = "auto"
@@ -718,6 +718,11 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	}
 	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + flags + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
+		if launch != "" {
+			if _, revokeErr := r.Clients[t.Repo].CreateComment(ctx, t.ID, fmt.Sprintf("%slaunch=%s attempt=%d mode=revoked", executor.LaunchModePrefix, launch, t.Attempt)); revokeErr != nil {
+				err = errors.Join(err, fmt.Errorf("launch mode receipt not revoked: %w", revokeErr))
+			}
+		}
 		var rejected *orca.RejectedError
 		if errors.As(err, &rejected) && rejected.Code == "runtime_error" {
 			r.orcaFailures++

@@ -116,6 +116,23 @@ func TestLaunchWithoutModeReceiptCreatesNoTerminal(t *testing.T) {
 	}
 }
 
+type refusedTerminalOrca struct{ fakeOrca }
+
+func (*refusedTerminalOrca) TerminalCreate(context.Context, orca.TerminalOptions) (orca.Receipt, error) {
+	return nil, errors.New("terminal refused")
+}
+
+func TestLaunchWithoutTerminalRevokesItsMode(t *testing.T) {
+	store := &fakeIssues{issueComments: evidenceComments("阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1")}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_MODE": "auto"}}}, Orca: &refusedTerminalOrca{}, DriverPath: "/driver"}
+	if err := r.Launch(t.Context(), fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, store.issueComments)); err == nil {
+		t.Fatal("refused terminal accepted")
+	}
+	if len(store.comments) != 2 || store.comments[1] != strings.Replace(store.comments[0], "mode=auto", "mode=revoked", 1) {
+		t.Fatalf("comments=%q", store.comments)
+	}
+}
+
 func assertParked(t *testing.T, store *labelStore, ticket Ticket) {
 	t.Helper()
 	after := fromEvidence(t, ticket, store.issueComments)

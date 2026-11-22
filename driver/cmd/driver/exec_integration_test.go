@@ -31,6 +31,8 @@ func TestEligibleMode(t *testing.T) {
 	rejected := project(root, "auto").Repository
 	moved := project(root, "auto")
 	moved.Repository.Env["AGENT_FEISHU_PROJECT"] = "host/two"
+	unnamed := project(root, "auto")
+	delete(unnamed.Repository.Env, "AGENT_FEISHU_PROJECT")
 	for _, tc := range []struct {
 		name   string
 		result projects.Result
@@ -41,37 +43,11 @@ func TestEligibleMode(t *testing.T) {
 		{"default", projects.Result{Eligible: []projects.Project{project(root, "")}}, "manual"},
 		{"rejected", projects.Result{Eligible: []projects.Project{project(other, "auto")}, Rejected: []projects.Rejection{{Path: root, Repository: &rejected}}}, ""},
 		{"another ledger project", projects.Result{Eligible: []projects.Project{moved}}, ""},
+		{"unnamed ledger project", projects.Result{Eligible: []projects.Project{unnamed}}, ""},
 		{"ambiguous", projects.Result{Eligible: []projects.Project{project(root, "auto"), project(link, "manual")}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mode, err := eligibleMode(tc.result, root, ledger)
-			if mode != tc.want || (err != nil) != (tc.want == "") {
-				t.Fatalf("mode=%q err=%v, want %q", mode, err, tc.want)
-			}
-		})
-	}
-}
-
-func TestRepositoryModeOutsideDiscovery(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	for _, tc := range []struct{ name, env, want string }{
-		{"backend from the environment", "AGENT_GH_REPO=acme/one\nAGENT_MODE=manual\n", "manual"},
-		{"another repository", "AGENT_ISSUE_BACKEND=github\nAGENT_GH_REPO=acme/two\nAGENT_MODE=auto\n", ""},
-		{"feishu profile", "AGENT_ISSUE_BACKEND=feishu\nAGENT_MODE=auto\n", ""},
-		{"github auto", "AGENT_ISSUE_BACKEND=github\nAGENT_MODE=auto\n", "auto"},
-		{"github default", "AGENT_ISSUE_BACKEND=github\n", "manual"},
-		{"invalid mode", "AGENT_ISSUE_BACKEND=github\nAGENT_MODE=turbo\n", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			gates := filepath.Join(root, "scripts", "agent-gates")
-			if err := os.MkdirAll(gates, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(gates, "agent-graph.env"), []byte(tc.env), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			mode, err := repositoryMode(t.Context(), root, map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "acme/one"})
 			if mode != tc.want || (err != nil) != (tc.want == "") {
 				t.Fatalf("mode=%q err=%v, want %q", mode, err, tc.want)
 			}

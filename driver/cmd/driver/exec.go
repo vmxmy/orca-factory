@@ -53,19 +53,11 @@ func execTicket(args []string) int {
 	})
 }
 
-// repositoryMode is the AGENT_MODE of the checkout at root, whose executor is
-// bound to ledger, as the scheduler's next discovery would track it. A Feishu
-// repository discovery does not take over keeps a mode only the scheduler knows,
-// so it stays unverified here; the scheduler never tracks another backend, whose
-// profile alone sets the mode.
+// repositoryMode is the AGENT_MODE the scheduler's next discovery would track for
+// the checkout at root, whose executor is bound to the Feishu ledger. A repository
+// discovery does not take over keeps a mode only the scheduler knows, so it stays
+// unverified here.
 func repositoryMode(ctx context.Context, root string, ledger map[string]string) (string, error) {
-	if ledger["AGENT_ISSUE_BACKEND"] != "feishu" {
-		profile, err := config.LoadRepository(root)
-		if err != nil {
-			return "", err
-		}
-		return ledgerMode(profile, ledger)
-	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	home, err := os.UserHomeDir()
@@ -97,19 +89,12 @@ func eligibleMode(result projects.Result, root string, ledger map[string]string)
 	if len(matches) != 1 {
 		return "", fmt.Errorf("repository is taken over at %d registered paths, want one", len(matches))
 	}
-	return ledgerMode(matches[0], ledger)
-}
-
-// ledgerMode refuses a profile that names a ledger other than the bound one. Keys
-// the profile leaves out came from the executor's environment.
-func ledgerMode(repo config.Repository, ledger map[string]string) (string, error) {
 	for _, key := range config.LedgerIdentityKeys {
-		bound, compared := ledger[key]
-		if named, ok := repo.Env[key]; ok && compared && named != bound {
+		if matches[0].Env[key] != ledger[key] {
 			return "", fmt.Errorf("%s no longer names the bound ledger", key)
 		}
 	}
-	return cmp.Or(repo.Env["AGENT_MODE"], "manual"), nil
+	return cmp.Or(matches[0].Env["AGENT_MODE"], "manual"), nil
 }
 
 var logComponent = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
