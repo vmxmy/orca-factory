@@ -98,13 +98,16 @@ func TestExecReadsRepositoryEnvWithBash(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
-	body := "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\nAGENT_TIER_DEFAULT=codex:model:high\nAGENT_INSTALL_CMD='printf '\\''ok'\\'''\n"
+	body := "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\nAGENT_TIER_DEFAULT=codex:model:high\nAGENT_MODE=auto\nAGENT_INSTALL_CMD='printf '\\''ok'\\'''\n"
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
 	executor, _, err := repositoryExecutor(context.Background(), repo)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if executor.Config.Mode != "manual" {
+		t.Fatalf("mode for Bash-only profile = %q, want manual", executor.Config.Mode)
 	}
 	if got := executor.Tools.(*Commands).InstallCommand; got != "printf 'ok'" {
 		t.Fatalf("install command=%q", got)

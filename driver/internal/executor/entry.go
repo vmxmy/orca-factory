@@ -196,7 +196,11 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 			}
 		}
 	}
-	cfg := Config{Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
+	mode := "manual"
+	if repository, err := config.LoadRegisteredRepository(values[15], repo); err == nil && repository.Env["AGENT_MODE"] == "auto" {
+		mode = "auto"
+	}
+	cfg := Config{Mode: mode, Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
 		Agent: entry.Agent, Model: entry.Model, Effort: entry.Effort, Escalate: escalate,
 		TierSettings: settings, TierChain: chain, WorkerSkills: workerSkills, Lane3Globs: strings.Fields(values[11])}
 	if cfg.Model == "" {
