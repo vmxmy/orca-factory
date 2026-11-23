@@ -504,6 +504,78 @@ func recordedWorkerScreen(t *testing.T, lines ...string) orca.Receipt {
 	return envelope.Result
 }
 
+func TestFirstDispatchParksWhenTierCooling(t *testing.T) {
+	primary := modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2", Effort: "xhigh"}
+	fallback := modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}
+	for _, tc := range []struct {
+		name            string
+		fallback        string
+		fallbackCooling bool
+		primaryUntil    time.Duration
+		parked          bool
+		wantModel       modelhealth.Ref
+	}{
+		{"all cooling", fallback.String(), true, time.Hour, true, modelhealth.Ref{}},
+		{"fallback available", fallback.String(), false, time.Hour, false, fallback},
+		{"no fallback", "", false, time.Hour, true, modelhealth.Ref{}},
+		{"cooldown expired", fallback.String(), true, -time.Minute, false, primary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, o, ledger, _, _, ticket := fixture(t, "new-sha")
+			e.Config.Agent, e.Config.Model, e.Config.Effort = primary.Agent, primary.Model, primary.Effort
+			e.Config.TierSettings = map[string]string{"AGENT_TIER_DEFAULT_FALLBACK": tc.fallback}
+			now := e.Now()
+			e.Now = func() time.Time { return now }
+			registry, err := modelhealth.Open(e.Config.Root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			statuses := []modelhealth.Status{{Ref: primary, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(tc.primaryUntil)}}
+			if tc.fallbackCooling {
+				statuses = append(statuses, modelhealth.Status{Ref: fallback, State: modelhealth.Unavailable, Reason: "model_not_found", Until: now.Add(time.Hour)})
+			}
+			for _, status := range statuses {
+				if err := registry.Record(status); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := e.Execute(context.Background(), ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.parked {
+				got := modelhealth.Ref{Agent: o.start.Agent, Model: o.start.Model, Effort: o.start.Effort}
+				if len(o.workerRequests) != 1 || got != tc.wantModel || result.State.Owner != machine.OwnerMerge {
+					t.Fatalf("dispatches=%v model=%v state=%+v", o.workerRequests, got, result.State)
+				}
+				for _, body := range ledger.comments {
+					if strings.HasPrefix(body, "搁置：") {
+						t.Fatalf("available candidate parked: %q", body)
+					}
+				}
+				return
+			}
+			if len(o.workerRequests) != 0 {
+				t.Fatalf("cooling tier dispatched worker: %+v", o.start)
+			}
+			reason := "模型不可用：claude:claude-fable-5-2:xhigh 至 2026-10-05T07:00:00Z"
+			if tc.fallback != "" {
+				reason += "；codex:gpt-6.1-sol:high 至 2026-10-05T07:00:00Z"
+			}
+			wantComments := []string{"搁置：" + reason, "搁置：" + reason + "\n已完成：首轮派工前当前档候选均在冷却，未派工\n阶段: 待领\n归属: 无"}
+			if !reflect.DeepEqual(ledger.comments, wantComments) {
+				t.Fatalf("comments=%q; want=%q", ledger.comments, wantComments)
+			}
+			if !reflect.DeepEqual(ledger.updates, []string{"Todo[parked] [ready-for-agent auto-impl auto-failed]"}) || !reflect.DeepEqual(ledger.commentsAtUpdate, []int{1}) {
+				t.Fatalf("updates=%q commentsAtUpdate=%v", ledger.updates, ledger.commentsAtUpdate)
+			}
+			if result.State.Phase != machine.PhaseUnclaimed || result.State.Owner != machine.OwnerNone || result.State.ExecAlive || result.State.HumanReason != reason {
+				t.Fatalf("parked state=%+v", result.State)
+			}
+		})
+	}
+}
+
 // OF-594: a worker at its model's quota notice is redone on the tier's next
 // candidate without a correction session and without charging the correction
 // or infra budget, whether it sat at the notice or exited after it. With every

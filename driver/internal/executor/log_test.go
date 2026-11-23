@@ -280,7 +280,7 @@ func TestWorkerStartUsesTierFallbackWhenPrimaryUnavailable(t *testing.T) {
 		want     modelhealth.Ref
 	}{
 		{"fallback", map[string]string{"default": primary.String(), "AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}, modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}},
-		{"no fallback", map[string]string{"default": primary.String()}, primary},
+		{"no fallback", map[string]string{"default": primary.String()}, modelhealth.Ref{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, o, _, _, _, ticket := fixture(t, "new-sha")
@@ -295,8 +295,15 @@ func TestWorkerStartUsesTierFallbackWhenPrimaryUnavailable(t *testing.T) {
 			if err = registry.Record(modelhealth.Status{Ref: primary, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = e.Execute(context.Background(), ticket); err != nil {
+			result, err := e.Execute(context.Background(), ticket)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.name == "no fallback" {
+				if len(o.workerRequests) != 0 || result.State.Phase != machine.PhaseUnclaimed || result.State.Owner != machine.OwnerNone || !strings.HasPrefix(result.State.HumanReason, "模型不可用：") {
+					t.Fatalf("cooling primary not parked: starts=%v state=%+v", o.workerRequests, result.State)
+				}
+				return
 			}
 			if got := (modelhealth.Ref{Agent: o.start.Agent, Model: o.start.Model, Effort: o.start.Effort}); got != tc.want {
 				t.Fatalf("worker start = %s, want %s", got, tc.want)
