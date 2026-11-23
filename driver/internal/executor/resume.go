@@ -93,6 +93,9 @@ func readCheckpoint(c Config, t Ticket) (*checkpoint, error) {
 // new-claim entry point for callers that already performed reconciliation.
 func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err error) {
 	e = e.withLog(ctx)
+	if e.Now == nil {
+		e.Now = time.Now
+	}
 	phase := machine.PhaseUnclaimed
 	delegated := false
 	result.State = machine.Initial()
