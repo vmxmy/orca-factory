@@ -45,6 +45,7 @@ type Runtime struct {
 	Orca                 OrcaClient
 	Workspaces           WorkspaceClient
 	OrcaPath, DriverPath string
+	GHConfigDir          string
 	// Version is this process's main.version; self deployment compares it,
 	// not the file at DriverPath, with the squash SHA.
 	Version string
@@ -98,6 +99,10 @@ type closedHistory struct {
 // inspection. serve passes no repos and lets the scheduler Track what
 // discovery finds.
 func NewRuntime(ctx context.Context, c config.Config, repos []config.Repository) (*Runtime, error) {
+	ghConfigDir := os.Getenv("GH_CONFIG_DIR")
+	if ghConfigDir != "" && !filepath.IsAbs(ghConfigDir) {
+		return nil, errors.New("GH_CONFIG_DIR must be an absolute path")
+	}
 	path, err := runx.OrcaPath()
 	if err != nil {
 		return nil, err
@@ -116,6 +121,7 @@ func NewRuntime(ctx context.Context, c config.Config, repos []config.Repository)
 		Workspaces:   client,
 		OrcaPath:     path,
 		DriverPath:   binary,
+		GHConfigDir:  ghConfigDir,
 
 		StateRoot:        stateRoot(),
 		HeartbeatTimeout: orca.HeartbeatTimeout(),
@@ -701,7 +707,11 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	if r.orcaFailures >= orcaRuntimeFailureThreshold {
 		return &terminalCreateRuntimeError{err: errOrcaRuntimePaused, ticket: t, failures: r.orcaFailures}
 	}
-	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
+	command := "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)
+	if r.GHConfigDir != "" {
+		command = "GH_CONFIG_DIR=" + quote(r.GHConfigDir) + " " + command
+	}
+	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: command})
 	if err != nil {
 		var rejected *orca.RejectedError
 		if errors.As(err, &rejected) && rejected.Code == "runtime_error" {

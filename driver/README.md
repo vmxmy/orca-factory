@@ -32,6 +32,8 @@ bin/orca-factory bootstrap <factory 仓库地址或本地路径>
 
 GitHub 客户端读取 rate-limit 响应头，只供看板与 status 观测额度，调度器不按额度暂停；403 权限错误不伪装成 quota。
 
+调度器启动执行器与 `driver resolve` 终端时，将服务进程的非空 `GH_CONFIG_DIR` 加到启动命令中，使它们与调度器使用同一套 gh 凭据；只传配置目录，不传令牌。该路径必须是绝对路径，否则调度器启动失败。服务未配置或值为空时，启动命令保持不变。worker 不受影响，仍使用 Orca 终端的环境与个人 gh 配置。已在运行的执行器保留旧环境，重新启动后才生效。
+
 ## 飞书账本后端
 
 飞书后端把票据账本放在一个飞书多维表格（Base）中。代码托管、PR 与合并通道仍走 GitHub。设计与字段定义见 [飞书多维表格票据账本](../docs/specs/feishu-bitable-ledger.md)。

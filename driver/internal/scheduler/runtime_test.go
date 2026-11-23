@@ -248,6 +248,68 @@ func TestClaimOneUpdateOneCommentAndSafeLaunch(t *testing.T) {
 		t.Fatal("accepted invalid ticket")
 	}
 }
+func TestNewRuntimeGHConfigDir(t *testing.T) {
+	t.Setenv("AGENT_ORCA_BIN", "/orca")
+	for _, tc := range []struct {
+		name, value string
+		wantError   bool
+	}{
+		{"absolute", "/srv/gh dir", false},
+		{"unset", "", false},
+		{"relative", "gh dir", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GH_CONFIG_DIR", tc.value)
+			r, err := NewRuntime(context.Background(), config.Config{}, nil)
+			if tc.wantError {
+				if err == nil || err.Error() != "GH_CONFIG_DIR must be an absolute path" {
+					t.Fatalf("expected absolute path error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.GHConfigDir != tc.value {
+				t.Fatalf("GHConfigDir=%q, want %q", r.GHConfigDir, tc.value)
+			}
+		})
+	}
+}
+
+func TestExecutorTerminalCarriesGHConfigDir(t *testing.T) {
+	for _, tc := range []struct {
+		name, ghConfigDir, command string
+		owner                      machine.Owner
+	}{
+		{"executor", "/srv/gh dir", `GH_CONFIG_DIR='/srv/gh dir' exec '/opt/driver with space' exec 'ENG-1' 2>>"$HOME/.local/state/orca-factory/launch-ENG-1.log"`, machine.OwnerExecutor},
+		{"resolver", "/srv/gh dir", `GH_CONFIG_DIR='/srv/gh dir' exec '/opt/driver with space' resolve 'ENG-1' 2>>"$HOME/.local/state/orca-factory/launch-ENG-1.log"`, machine.OwnerResolver},
+		{"unset", "", `exec '/opt/driver with space' exec 'ENG-1' 2>>"$HOME/.local/state/orca-factory/launch-ENG-1.log"`, machine.OwnerExecutor},
+		{"quoted", "/srv/gh's dir", `GH_CONFIG_DIR='/srv/gh'"'"'s dir' exec '/opt/driver with space' exec 'ENG-1' 2>>"$HOME/.local/state/orca-factory/launch-ENG-1.log"`, machine.OwnerExecutor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oc := &fakeOrca{}
+			lc := &fakeIssues{issues: []task.Issue{{ID: "id", Identifier: "ENG-1", Project: task.NamedID{ID: "p1"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
+			r := &Runtime{Clients: map[string]issues.Store{"/repo": lc}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1"}}}, Orca: oc, DriverPath: "/opt/driver with space", GHConfigDir: tc.ghConfigDir}
+			ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}
+			action := Action{Kind: Claim, Phase: machine.PhaseWorker}
+			if tc.owner == machine.OwnerResolver {
+				action = Action{Kind: Resolve, Phase: machine.PhaseResolver}
+			}
+			if err := r.Apply(context.Background(), ticket, action); err != nil {
+				t.Fatal(err)
+			}
+			ticket.Owner, ticket.Phase = tc.owner, action.Phase
+			if err := r.Launch(context.Background(), ticket); err != nil {
+				t.Fatal(err)
+			}
+			if len(oc.launches) != 1 || oc.launches[0].Command != tc.command {
+				t.Fatalf("launch=%v, want command %q", oc.launches, tc.command)
+			}
+		})
+	}
+}
+
 func TestResumeOnlyWritesOwnership(t *testing.T) {
 	lc := &fakeIssues{}
 	r := &Runtime{Clients: map[string]issues.Store{"repo": lc}}
