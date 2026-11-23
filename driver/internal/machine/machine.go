@@ -79,7 +79,6 @@ const (
 	EvReviewRed    Event = "reviewRed"
 	EvReviewEmpty  Event = "reviewEmpty"
 	EvSessionOK    Event = "sessionOk"
-	EvSessionEmpty Event = "sessionEmpty"
 	EvOpenPR       Event = "openPr"
 	EvMerge        Event = "merge"
 	EvConflict     Event = "conflict"
@@ -308,7 +307,7 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 		default:
 			infra("reviewer empty output")
 		}
-	case EvSessionOK, EvSessionEmpty, EvCorrectionStalled:
+	case EvSessionOK, EvCorrectionStalled:
 		if s.Phase != PhaseCorrection {
 			return reject("不在写 correction")
 		}

@@ -101,6 +101,21 @@ func (c *Commands) ChildTask(ctx context.Context, run, parent, spec, request str
 	return id, nil
 }
 
+func correctionFallback(sessionErr error, cause, summary string) []byte {
+	reason := "文件为空"
+	switch {
+	case errors.Is(sessionErr, context.DeadlineExceeded):
+		reason = "超时"
+	case sessionErr != nil:
+		reason = "会话失败"
+	}
+	fallback := fmt.Sprintf("执行器代写：correction 会话未写出修复步骤（%s），按下列失败证据修复。\n失败原因：%s", reason, cause)
+	if summary != "" {
+		fallback += "\n失败摘要：" + summary
+	}
+	return []byte(fallback)
+}
+
 type transitionFunc func(machine.Event, func([]machine.Effect) error) error
 
 func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Result, cp *checkpoint, brief, cause, summary string, report *orca.WorkerReport, transition transitionFunc) (bool, error) {
@@ -138,19 +153,15 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		if stop := dependencyStop(ctx, sessionErr); stop != nil {
 			return false, stop
 		}
-		info, statErr := os.Lstat(path)
-		if sessionErr != nil || statErr != nil || !info.Mode().IsRegular() {
-			if err := transition(machine.EvSessionEmpty, nil); err != nil {
-				return false, err
+		var correction []byte
+		if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
+			if data, err := os.ReadFile(path); err == nil {
+				correction = data
 			}
-			continue
 		}
-		correction, err := os.ReadFile(path)
-		if err != nil || strings.TrimSpace(string(correction)) == "" {
-			if err := transition(machine.EvSessionEmpty, nil); err != nil {
-				return false, err
-			}
-			continue
+		if strings.TrimSpace(string(correction)) == "" {
+			correction = correctionFallback(sessionErr, cause, summary)
+			e.logger().Warn("correction fallback", "correction", result.State.Corrections, "session_error", sessionErr != nil)
 		}
 		if reason, stalled := stallVerdict(correction); stalled {
 			result.StallReason = reason

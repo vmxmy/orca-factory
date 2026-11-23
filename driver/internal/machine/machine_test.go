@@ -16,7 +16,7 @@ func TestScenarios(t *testing.T) {
 		attempt, corrections, infra, execFailures int
 	}{
 		{"happy", []Event{EvClaim, EvWorkerOK, EvBranchOK, EvGateGreen, EvReviewGreen, EvOpenPR, EvMerge}, "已合并", "无", 1, 0, 0, 0},
-		{"z820", []Event{EvClaim, EvWorkerOK, EvBranchOK, EvGateGreen, EvReviewRed, EvSessionEmpty, EvSessionOK, EvWorkerOK, EvBranchOK, EvGateGreen, EvReviewGreen, EvOpenPR, EvMerge}, "已合并", "无", 1, 1, 1, 0},
+		{"z820", []Event{EvClaim, EvWorkerOK, EvBranchOK, EvGateGreen, EvReviewRed, EvSessionOK, EvWorkerOK, EvBranchOK, EvGateGreen, EvReviewGreen, EvOpenPR, EvMerge}, "已合并", "无", 1, 1, 0, 0},
 		{"z803", []Event{EvClaim, EvExecCrash, EvWorkerOK, EvTick, EvBranchOK, EvGateGreen, EvReviewGreen, EvOpenPR, EvMerge}, "已合并", "无", 2, 0, 0, 1},
 		{"unsure", []Event{EvClaim, EvReadFail, EvTick, EvTick, EvWorkerOK}, "分支检查", "执行器", 1, 0, 0, 0},
 		{"claude", []Event{EvClaim, EvWorkerOK, EvBranchOK, EvGateGreen, "pauseClaude", EvReviewGreen, "pauseClaude", EvReviewGreen, EvOpenPR, EvMerge}, "已合并", "无", 1, 0, 0, 0},

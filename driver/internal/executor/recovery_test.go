@@ -105,7 +105,6 @@ func (f *recoveryTools) Review(ctx context.Context, repo, base, head string, est
 type recoveryService struct {
 	sessions, children int
 	stalledFrom        int
-	missing            bool
 	complete           bool
 	requests           []CorrectionRequest
 }
@@ -113,9 +112,6 @@ type recoveryService struct {
 func (r *recoveryService) Correction(_ context.Context, req CorrectionRequest) error {
 	r.sessions++
 	r.requests = append(r.requests, req)
-	if r.missing {
-		return nil
-	}
 	if r.stalledFrom > 0 && req.Number >= r.stalledFrom {
 		return os.WriteFile(req.Path, []byte("\nSTALLED: 同一断言连续失败\a，步骤无新进展\n第二行\n"), 0600)
 	}
@@ -186,6 +182,101 @@ func TestCorrectionLoop(t *testing.T) {
 		})
 	}
 }
+
+type fallbackRecovery struct {
+	recoveryService
+	correction func(context.Context, CorrectionRequest) error
+	specs      []string
+}
+
+func (r *fallbackRecovery) Correction(ctx context.Context, req CorrectionRequest) error {
+	r.sessions++
+	r.requests = append(r.requests, req)
+	return r.correction(ctx, req)
+}
+
+func (r *fallbackRecovery) ChildTask(_ context.Context, _, _, spec, _ string) (string, error) {
+	r.specs = append(r.specs, spec)
+	return "child_task", nil
+}
+
+func TestCorrectionSessionFallback(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		content    string
+		write      bool
+		err        error
+		correction int
+		want       string
+		stalled    bool
+	}{
+		{"timeout", "", false, context.DeadlineExceeded, 1, "执行器代写：correction 会话未写出修复步骤（超时），按下列失败证据修复。", false},
+		{"session failed", "", false, errors.New("exit status 1"), 1, "执行器代写：correction 会话未写出修复步骤（会话失败），按下列失败证据修复。", false},
+		{"written before exit error", "步骤 1：修复断言", true, errors.New("exit status 1"), 1, "步骤 1：修复断言", false},
+		{"empty file", "", true, nil, 1, "执行器代写：correction 会话未写出修复步骤（文件为空），按下列失败证据修复。", false},
+		{"whitespace file", " \n\t", true, nil, 1, "执行器代写：correction 会话未写出修复步骤（文件为空），按下列失败证据修复。", false},
+		{"second correction stalled", "STALLED: 重复失败", true, errors.New("exit status 1"), 2, "", true},
+		{"third correction stalled", "STALLED: 重复失败", true, errors.New("exit status 1"), 3, "", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e, o, tools, _, issues, ticket := recoveryFixture(t)
+			tools.gateReds = tt.correction
+			s := &fallbackRecovery{correction: func(_ context.Context, req CorrectionRequest) error {
+				if req.Number < tt.correction {
+					return os.WriteFile(req.Path, []byte("Repair the failing assertion"), 0600)
+				}
+				if tt.write {
+					if err := os.WriteFile(req.Path, []byte(tt.content), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return tt.err
+			}}
+			e.Recovery = s
+			var sleeps []time.Duration
+			e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
+			result, err := e.Execute(context.Background(), ticket)
+			if err != nil || result.State.Infra != 0 || len(sleeps) != 0 || s.sessions != tt.correction {
+				t.Fatalf("result=%+v err=%v sleeps=%v sessions=%d", result, err, sleeps, s.sessions)
+			}
+			if tt.stalled {
+				if result.State.Owner != machine.OwnerResolver || result.StallReason != "重复失败" || len(o.starts) != tt.correction || len(s.specs) != tt.correction-1 {
+					t.Fatalf("result=%+v starts=%d specs=%v", result, len(o.starts), s.specs)
+				}
+				assertBudgetHandoff(t, issues)
+				return
+			}
+			if result.State.Owner != machine.OwnerMerge || len(o.starts) != 2 || len(s.specs) != 1 {
+				t.Fatalf("result=%+v starts=%d specs=%v", result, len(o.starts), s.specs)
+			}
+			spec := s.specs[0]
+			fallback := strings.HasPrefix(tt.want, "执行器代写：")
+			body := tt.want
+			if fallback {
+				log, err := os.ReadFile(failLogPath(e.Config, ticket))
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines := strings.Split(strings.TrimSpace(string(log)), "\n")
+				body += "\n失败原因：" + s.requests[0].Cause + "\n失败摘要：" + lines[len(lines)-1]
+			}
+			if want := fmt.Sprintf("correction %d/3\n%s\n", tt.correction, body); !strings.Contains(spec, want) {
+				t.Fatalf("spec=%q, want contiguous %q", spec, want)
+			}
+			if !fallback && strings.Contains(spec, "执行器代写") {
+				t.Fatalf("written steps replaced with fallback: %q", spec)
+			}
+		})
+	}
+}
+
+func TestCorrectionFallbackOmitsEmptySummary(t *testing.T) {
+	want := "执行器代写：correction 会话未写出修复步骤（文件为空），按下列失败证据修复。\n失败原因：head CI failed"
+	if got := string(correctionFallback(nil, "head CI failed", "")); got != want {
+		t.Fatalf("fallback=%q, want %q", got, want)
+	}
+}
+
 func TestCorrectionTierAndCap(t *testing.T) {
 	for _, escalate := range []string{"0", "1"} {
 		t.Run(escalate, func(t *testing.T) {
@@ -214,14 +305,16 @@ func TestCorrectionTierAndCap(t *testing.T) {
 	}
 }
 func TestCorrectionMissingArtifactBudget(t *testing.T) {
-	e, o, tools, s, l, ticket := recoveryFixture(t)
+	e, o, tools, _, _, ticket := recoveryFixture(t)
 	tools.gateReds = 1
-	s.missing = true
+	s := &fallbackRecovery{correction: func(context.Context, CorrectionRequest) error { return nil }}
+	e.Recovery = s
+	var sleeps []time.Duration
+	e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Infra != 3 || result.State.Owner != machine.OwnerResolver || s.sessions != 3 || len(o.starts) != 1 || s.children != 0 {
-		t.Fatalf("result=%+v err=%v sessions=%d children=%d starts=%d", result, err, s.sessions, s.children, len(o.starts))
+	if err != nil || result.State.Infra != 0 || len(sleeps) != 0 || result.State.Owner != machine.OwnerMerge || s.sessions != 1 || len(o.starts) != 2 || len(s.specs) != 1 || !strings.Contains(s.specs[0], "执行器代写：correction 会话未写出修复步骤（文件为空）") {
+		t.Fatalf("result=%+v err=%v sleeps=%v sessions=%d specs=%q starts=%d", result, err, sleeps, s.sessions, s.specs, len(o.starts))
 	}
-	assertBudgetHandoff(t, l)
 }
 func TestInfraBudgetBackoff(t *testing.T) {
 	e, _, tools, _, _, ticket := recoveryFixture(t)
@@ -354,8 +447,8 @@ func TestInfraBudgetSharedAcrossCorrection(t *testing.T) {
 	var sleeps []time.Duration
 	e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Infra != 2 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
-		t.Fatalf("result=%+v err=%v sleeps=%v", result, err, sleeps)
+	if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Infra != 1 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute}) || s.children != 1 {
+		t.Fatalf("result=%+v err=%v sleeps=%v children=%d", result, err, sleeps, s.children)
 	}
 }
 
@@ -367,6 +460,14 @@ func (s *missingOnceRecovery) Correction(ctx context.Context, r CorrectionReques
 		return nil
 	}
 	return s.recoveryService.Correction(ctx, r)
+}
+
+func (s *missingOnceRecovery) ChildTask(_ context.Context, _, _, spec, _ string) (string, error) {
+	if !strings.Contains(spec, "执行器代写：correction 会话未写出修复步骤（文件为空）") {
+		return "", errors.New("missing fallback in child task")
+	}
+	s.children++
+	return "child_task", nil
 }
 
 func TestResumeLegacyRunResult(t *testing.T) {
