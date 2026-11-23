@@ -153,6 +153,7 @@ func newDoctorProbe() (doctorProbe, error) {
 	if err != nil {
 		return doctorProbe{}, err
 	}
+	relayEnv, relayErr := config.ModelRelay(home)
 	ledgers := issues.NewFactory(cfg.Tuning)
 	return doctorProbe{
 		now:          time.Now(),
@@ -161,7 +162,7 @@ func newDoctorProbe() (doctorProbe, error) {
 		recordModels: true,
 		modelSettings: func() doctorModelSettings {
 			proxy, proxyErr := config.ModelProxyURL(home)
-			settings := doctorModelSettings{proxyURL: proxy, proxyErr: proxyErr}
+			settings := doctorModelSettings{proxyURL: proxy, proxyErr: proxyErr, relayEnv: relayEnv, relayErr: relayErr}
 			// As loadGatewaySettings: driver.env always parses, then a non-empty
 			// process value replaces the file value before trimming.
 			file, err := (bootstrapProbe{home: home}).driverEnv()
@@ -847,6 +848,8 @@ type doctorModelStatus struct {
 }
 
 type doctorModelSettings struct {
+	relayEnv     map[string]string
+	relayErr     error
 	proxyURL     string
 	proxyErr     error
 	intakePi     string
@@ -870,7 +873,7 @@ func (r doctorModelRole) probeKey() string {
 	if binary == "" {
 		binary, _ = exec.LookPath(r.ref.Agent)
 	}
-	return strings.Join([]string{r.ref.Key(), binary, r.endpoint.BaseURL, strconv.FormatBool(r.endpoint.Isolated)}, "\x00")
+	return strings.Join([]string{r.ref.Key(), binary, r.endpoint.BaseURL, r.endpoint.AuthToken, strconv.FormatBool(r.endpoint.Isolated)}, "\x00")
 }
 
 func invalidModelRole(name, raw string) doctorModelRole {
@@ -980,7 +983,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 				}
 			}
 		case "second_reviewer":
-			// Cross review runs both reviewers with only HOME and PATH (scheduler/crossreview.go).
+			// Cross review uses isolated environments (scheduler/crossreview.go).
 			modelRole.endpoint.Isolated = true
 			hasSecondReviewer = true
 		case "resolver":
@@ -1017,6 +1020,13 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	}
 	roles = append(roles, s.intakeRole(env, intakeTier, pi))
 	for i, role := range roles {
+		if role.endpoint.Isolated && role.ref.Agent == "claude" {
+			roles[i].endpoint.BaseURL = s.relayEnv["ANTHROPIC_BASE_URL"]
+			roles[i].endpoint.AuthToken = s.relayEnv["ANTHROPIC_AUTH_TOKEN"]
+			if s.relayErr != nil {
+				roles[i].reason = "model_relay_invalid"
+			}
+		}
 		if role.reason == "" && !supportedModelAgent(role.ref.Agent) {
 			roles[i].reason = "unsupported_agent"
 		}
@@ -1123,6 +1133,8 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 	switch {
 	case settings.proxyErr != nil:
 		check.Status, check.Reason = healthFail, "模型代理配置无效，执行器无法启动"
+	case settings.relayErr != nil:
+		check.Status, check.Reason = healthFail, "模型中转站配置无效，网关与交叉审查无法启动"
 	case invalid:
 		check.Status, check.Reason = healthFail, "仓库角色的模型档位配置无效"
 	case exhausted:

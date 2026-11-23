@@ -361,6 +361,44 @@ func ModelProxyURL(home string) (string, error) {
 	return value, nil
 }
 
+// ModelRelay returns credentials only for isolated Claude roles. URL-only
+// configuration keeps their existing environment and local Claude login.
+func ModelRelay(home string) (map[string]string, error) {
+	address, token := os.Getenv("AGENT_MODEL_PROXY_URL"), os.Getenv("AGENT_MODEL_PROXY_TOKEN")
+	if address == "" || token == "" {
+		f, err := os.Open(filepath.Join(home, ".config", "orca-factory", "driver.env"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, errors.New("driver.env could not be read")
+		}
+		if err == nil {
+			env, parseErr := ParseEnv(f)
+			closeErr := f.Close()
+			if parseErr != nil || closeErr != nil {
+				return nil, errors.New("driver.env is invalid")
+			}
+			if address == "" {
+				address = env["AGENT_MODEL_PROXY_URL"]
+			}
+			if token == "" {
+				token = env["AGENT_MODEL_PROXY_TOKEN"]
+			}
+		}
+	}
+	if address != "" {
+		u, err := url.Parse(address)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, errors.New("AGENT_MODEL_PROXY_URL must be an http(s) URL")
+		}
+	}
+	if token == "" {
+		return nil, nil
+	}
+	if address == "" {
+		return nil, errors.New("AGENT_MODEL_PROXY_TOKEN requires AGENT_MODEL_PROXY_URL")
+	}
+	return map[string]string{"ANTHROPIC_BASE_URL": address, "ANTHROPIC_AUTH_TOKEN": token}, nil
+}
+
 var assignment = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
 
 // AssignedKeys reports the keys ParseEnv reads as explicit, so driver exec and

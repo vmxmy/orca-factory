@@ -159,7 +159,7 @@ func TestIntakeSession(t *testing.T) {
 		return []string{"-p", "--output-format", "json", flag, id, "--model", "claude-opus-5-5", "--effort", "high",
 			"--append-system-prompt-file", checkout + "/scripts/agent-gates/roles/intake-chat.md",
 			"--tools", "Read,Grep,Glob,Skill", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config",
-			"--settings", `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.config/**)","Read(~/.local/state/**)","Read(~/.ssh/**)"]}}`}
+			"--settings", `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.config/**)","Read(~/.local/state/**)","Read(~/.ssh/**)","Read(/proc/**)"]}}`}
 	}
 	wantEnv := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
 	answer := "pong\n\nROLE-LOADED"
@@ -340,6 +340,43 @@ func TestIntakeTurnRetriesNextModelAfterLimit(t *testing.T) {
 			}
 			if err == nil || registry.Status(fallback, now).State != modelhealth.Unavailable {
 				t.Fatalf("failed fallback not recorded: err=%v status=%+v", err, registry.Status(fallback, now))
+			}
+		})
+	}
+}
+
+func TestModelRelayIntake(t *testing.T) {
+	for _, token := range []string{"", "fake-relay-token"} {
+		t.Run(token, func(t *testing.T) {
+			dir := t.TempDir()
+			binary := filepath.Join(dir, "claude")
+			if err := os.WriteFile(binary, []byte("#!/bin/sh\n/bin/cat /proc/$$/environ > env\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			runner := Runner{Claude: binary, Checkout: dir, Bwrap: standInBwrap(t), ModelToken: token}
+			if token != "" {
+				runner.ModelURL = "https://relay.invalid"
+			}
+			t.Setenv("UNRELATED_SECRET", "must-not-reach-intake")
+			if _, err := runner.claude(context.Background(), "--session-id", Turn{Session: "session"}, modelhealth.Ref{Agent: "claude"}); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, "env"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+			want := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+			if token != "" {
+				want = append(want, "ANTHROPIC_BASE_URL=https://relay.invalid", "ANTHROPIC_AUTH_TOKEN="+token)
+			}
+			slices.Sort(env)
+			slices.Sort(want)
+			if !slices.Equal(env, want) {
+				t.Fatal("unexpected intake environment")
+			}
+			if !strings.Contains(agentSettings, `"Read(/proc/**)"`) {
+				t.Fatal("proc read deny missing")
 			}
 		})
 	}

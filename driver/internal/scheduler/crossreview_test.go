@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -453,4 +454,98 @@ func TestCrossReviewRetriesNextModelAndRecordsEachFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestModelRelayCrossReview(t *testing.T) {
+	f := newCrossReviewFixture(t, "scope-extension", "src/fix.go")
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude := modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2", Effort: "high"}
+	codex := modelhealth.Ref{Agent: "codex", Model: "gpt-6", Effort: "high"}
+	for _, tc := range []struct {
+		name        string
+		first, next modelhealth.Ref
+		legacy      string
+		relay       bool
+	}{
+		{name: "claude", first: claude, relay: true},
+		{name: "codex", first: codex, relay: true},
+		{name: "legacy", legacy: "custom-review", relay: true},
+		{name: "unconfigured", first: claude},
+		{name: "fallback to codex", first: claude, next: codex, relay: true},
+		{name: "fallback to claude", first: codex, next: claude, relay: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := tc.legacy
+			if command == "" {
+				var err error
+				command, err = config.GenerateReviewerCommand(tc.first.String())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			reviewer := crossReviewer{name: "reviewer", command: command, used: tc.first}
+			if tc.next.Agent != "" {
+				reviewer.candidates = []modelhealth.Ref{tc.first, tc.next}
+			}
+			var captured []runx.Spec
+			run := func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if s.Path != "/bin/sh" {
+					return runx.Run(ctx, s)
+				}
+				green := []byte(`{"step":"cross-review","verdict":"green","expands_authority":false,"reason":"ok"}`)
+				if s.Args[3] == "true" {
+					return green, nil
+				}
+				captured = append(captured, s)
+				if tc.next.Agent != "" && len(captured) == 1 {
+					return limit, errors.New("exit status 1")
+				}
+				return green, nil
+			}
+			job := crossReviewJob{ticketID: "id", repo: f.repo.Path, head: f.head, scope: []string{"src/*"}, reviewers: [2]crossReviewer{reviewer, {name: "second", command: "true"}}, stateRoot: t.TempDir(), run: run, now: time.Now}
+			if tc.relay {
+				job.relayEnv = map[string]string{"ANTHROPIC_BASE_URL": "https://relay.invalid", "ANTHROPIC_AUTH_TOKEN": "fake-token"}
+			}
+			record := job.execute(context.Background())
+			count := 1
+			if tc.next.Agent != "" {
+				count = 2
+			}
+			if len(captured) != count {
+				t.Fatalf("calls=%d, want=%d, record=%+v", len(captured), count, record)
+			}
+			for i, s := range captured {
+				agent := tc.first.Agent
+				if i == 1 {
+					agent = tc.next.Agent
+				}
+				want := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+				if agent == "claude" && tc.relay {
+					want = append(want, "ANTHROPIC_BASE_URL=https://relay.invalid", "ANTHROPIC_AUTH_TOKEN=fake-token")
+				}
+				if !slices.Equal(s.Env, want) {
+					t.Fatalf("call %d environment mismatch", i)
+				}
+			}
+		})
+	}
+	t.Run("invalid config does not start", func(t *testing.T) {
+		t.Setenv("AGENT_MODEL_PROXY_URL", "")
+		t.Setenv("AGENT_MODEL_PROXY_TOKEN", "fake-scheduler-token")
+		raw, _ := json.Marshal(map[string]string{"action": "escalate", "class": "scope-extension", "head": f.head, "reason": "scope", "body": "scope"})
+		ticket := Ticket{ID: "id", Repo: f.repo.Path, Owner: machine.OwnerHuman, Resolution: &resolver.Record{Phase: "human", Dispatch: "ctx_invalid", Result: string(raw)}}
+		err := f.runtime.startCrossReview(context.Background(), ticket)
+		if err == nil {
+			t.Fatal("invalid relay configuration accepted")
+		}
+		if strings.Contains(err.Error(), "fake-scheduler-token") {
+			t.Fatal("credential in error")
+		}
+		if f.runtime.reviews != nil {
+			t.Fatal("cross review started with invalid relay")
+		}
+	})
 }

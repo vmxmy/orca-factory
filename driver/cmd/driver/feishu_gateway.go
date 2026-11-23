@@ -126,8 +126,9 @@ func intakeLedger(ctx context.Context, env map[string]string, tuning config.Tuni
 // rediscovers the live eligible set, but only the first topic that actually
 // dispatches to a given prefix pays for building its Store and Runner.
 type projectRuntime struct {
-	mu     sync.Mutex
-	claude string
+	relayEnv map[string]string
+	mu       sync.Mutex
+	claude   string
 	// piTier selects the pi --mode rpc execution path when non-empty
 	// (AGENT_INTAKE_PI); piBinaryErr defers the "pi not installed" failure
 	// to projects that actually opt into the path.
@@ -233,6 +234,9 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	// core/gate.sh always treats scripts/agent-gates/* as lane 2.
 	project.Lane2Globs, project.Lane3Globs = "scripts/agent-gates/* "+p.Repository.Env["AGENT_LANE2_GLOBS"], p.Repository.Env["AGENT_LANE3_GLOBS"]
 	runner := &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Model: model, Effort: effort, Fallback: fallback, StateRoot: logStateRoot(), Timeout: 5 * time.Minute, Tickets: intakeTickets(store, p.Path, r.readers)}
+	if piTier == "" {
+		runner.ModelURL, runner.ModelToken = r.relayEnv["ANTHROPIC_BASE_URL"], r.relayEnv["ANTHROPIC_AUTH_TOKEN"]
+	}
 	if piTier != "" {
 		runner.PiBinary = r.piBinary
 		runner.PiProvider, runner.PiModel, runner.PiThinking = piProvider, piModel, piThinking
@@ -688,6 +692,10 @@ func runFeishuGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	relayEnv, err := config.ModelRelay(home)
+	if err != nil {
+		return err
+	}
 	cfg, err := config.Load(home)
 	if err != nil {
 		return err
@@ -705,6 +713,7 @@ func runFeishuGateway(ctx context.Context) error {
 		return err
 	}
 	runtime := newProjectRuntime(claude, cacheDir, cfg.Tuning)
+	runtime.relayEnv = relayEnv
 	runtime.setPi(settings["AGENT_INTAKE_PI"], filepath.Join(logStateRoot(), "intake-pi-sessions"), filepath.Join(home, ".pi", "agent"))
 	defer runtime.stop()
 	orcaClient := &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}
