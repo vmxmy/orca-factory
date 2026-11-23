@@ -272,6 +272,7 @@ func TestIntakeQueryTruncation(t *testing.T) {
 // TestIntakeQueryConcurrentSessions runs two sessions bound to different
 // projects at once; each loop's evidence returns only to its own session.
 func TestIntakeQueryConcurrentSessions(t *testing.T) {
+	limits := queryLimits{perQuery: time.Second, loop: 2 * time.Second}
 	querier := func(_ context.Context, p Project, _ QueryRequest) Evidence {
 		time.Sleep(5 * time.Millisecond)
 		return Evidence{Outcome: OutcomeOK, Data: "project=" + p.Prefix}
@@ -287,7 +288,7 @@ func TestIntakeQueryConcurrentSessions(t *testing.T) {
 	var mu sync.Mutex
 	for _, prefix := range []string{"OF", "ZY"} {
 		wg.Go(func() {
-			answer, err := runQueries(context.Background(), turn, querier, Turn{Session: "s-" + prefix, Project: Project{Prefix: prefix}}, testLimits)
+			answer, err := runQueries(context.Background(), turn, querier, Turn{Session: "s-" + prefix, Project: Project{Prefix: prefix}}, limits)
 			if err != nil {
 				t.Error(err)
 			}
