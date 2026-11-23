@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -69,7 +70,11 @@ func Run(ctx context.Context, spec Spec) (output []byte, err error) {
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
 	if filepath.Base(spec.Path) == "git" {
-		cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+		env := slices.Clip(spec.Env)
+		if env == nil {
+			env = cmd.Environ()
+		}
+		cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0")
 	}
 	cmd.Stderr = &captured
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
