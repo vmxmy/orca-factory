@@ -464,18 +464,24 @@ func TestModelRelayCrossReview(t *testing.T) {
 	}
 	claude := modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2", Effort: "high"}
 	codex := modelhealth.Ref{Agent: "codex", Model: "gpt-6", Effort: "high"}
+	shellModel := modelhealth.Ref{Agent: "claude", Model: "m;env", Effort: "high"}
 	for _, tc := range []struct {
 		name        string
 		first, next modelhealth.Ref
 		legacy      string
 		relay       bool
+		wantRelay   []bool
 	}{
-		{name: "claude", first: claude, relay: true},
-		{name: "codex", first: codex, relay: true},
-		{name: "legacy", legacy: "custom-review", relay: true},
-		{name: "unconfigured", first: claude},
-		{name: "fallback to codex", first: claude, next: codex, relay: true},
-		{name: "fallback to claude", first: codex, next: claude, relay: true},
+		{name: "claude", first: claude, relay: true, wantRelay: []bool{true}},
+		{name: "codex", first: codex, relay: true, wantRelay: []bool{false}},
+		{name: "legacy", legacy: "custom-review", relay: true, wantRelay: []bool{false}},
+		{name: "unconfigured", first: claude, wantRelay: []bool{false}},
+		{name: "default model", first: modelhealth.Ref{Agent: "claude", Effort: "high"}, relay: true, wantRelay: []bool{false}},
+		{name: "shell model", first: shellModel, relay: true, wantRelay: []bool{false}},
+		{name: "shell effort", first: modelhealth.Ref{Agent: "claude", Model: "m", Effort: "high*"}, relay: true, wantRelay: []bool{false}},
+		{name: "fallback to codex", first: claude, next: codex, relay: true, wantRelay: []bool{true, false}},
+		{name: "fallback to claude", first: codex, next: claude, relay: true, wantRelay: []bool{false, true}},
+		{name: "fallback to shell model", first: claude, next: shellModel, relay: true, wantRelay: []bool{true, false}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			command := tc.legacy
@@ -510,20 +516,13 @@ func TestModelRelayCrossReview(t *testing.T) {
 				job.relayEnv = map[string]string{"ANTHROPIC_BASE_URL": "https://relay.invalid", "ANTHROPIC_AUTH_TOKEN": "fake-token"}
 			}
 			record := job.execute(context.Background())
-			count := 1
-			if tc.next.Agent != "" {
-				count = 2
-			}
+			count := len(tc.wantRelay)
 			if len(captured) != count {
 				t.Fatalf("calls=%d, want=%d, record=%+v", len(captured), count, record)
 			}
 			for i, s := range captured {
-				agent := tc.first.Agent
-				if i == 1 {
-					agent = tc.next.Agent
-				}
 				want := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
-				if agent == "claude" && tc.relay {
+				if tc.wantRelay[i] {
 					want = append(want, "ANTHROPIC_BASE_URL=https://relay.invalid", "ANTHROPIC_AUTH_TOKEN=fake-token")
 				}
 				if !slices.Equal(s.Env, want) {

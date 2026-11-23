@@ -158,6 +158,16 @@ func newProjectRuntime(claude, cacheDir string, tuning config.Tuning) *projectRu
 		sources: map[string]querySource{}, readers: defaultEvidenceReaders()}
 }
 
+func newGatewayRuntime(home, claude, cacheDir string, tuning config.Tuning) (*projectRuntime, error) {
+	relayEnv, err := config.ModelRelay(home)
+	if err != nil {
+		return nil, err
+	}
+	runtime := newProjectRuntime(claude, cacheDir, tuning)
+	runtime.relayEnv = relayEnv
+	return runtime, nil
+}
+
 // setPi installs the gateway-wide pi RPC configuration: the tier comes from
 // AGENT_INTAKE_PI and the binary resolves like claude's, but only projects
 // whose own env opts into the tier need pi installed at all.
@@ -692,10 +702,6 @@ func runFeishuGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	relayEnv, err := config.ModelRelay(home)
-	if err != nil {
-		return err
-	}
 	cfg, err := config.Load(home)
 	if err != nil {
 		return err
@@ -712,8 +718,10 @@ func runFeishuGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runtime := newProjectRuntime(claude, cacheDir, cfg.Tuning)
-	runtime.relayEnv = relayEnv
+	runtime, err := newGatewayRuntime(home, claude, cacheDir, cfg.Tuning)
+	if err != nil {
+		return err
+	}
 	runtime.setPi(settings["AGENT_INTAKE_PI"], filepath.Join(logStateRoot(), "intake-pi-sessions"), filepath.Join(home, ".pi", "agent"))
 	defer runtime.stop()
 	orcaClient := &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}

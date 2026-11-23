@@ -1696,6 +1696,18 @@ func TestHostMemoryNotificationThroughStatusBackend(t *testing.T) {
 
 func TestModelRelayDoctor(t *testing.T) {
 	const token = "fake-doctor-relay-sentinel"
+	checkOutput := func(t *testing.T, report healthReport) {
+		t.Helper()
+		for _, asJSON := range []bool{true, false} {
+			var output bytes.Buffer
+			if err := writeHealth(&output, report, asJSON, doctorChecks); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(output.String(), token) {
+				t.Fatal("credential in doctor output")
+			}
+		}
+	}
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENT_MODEL_PROXY_URL", "https://relay.invalid")
 	t.Setenv("AGENT_MODEL_PROXY_TOKEN", token)
@@ -1742,21 +1754,59 @@ func TestModelRelayDoctor(t *testing.T) {
 			if url != "https://relay.invalid" && got.Status != "fail" {
 				t.Fatalf("invalid relay status=%s", got.Status)
 			}
-			for _, asJSON := range []bool{true, false} {
-				var output bytes.Buffer
-				report := healthReport{Checks: map[string]healthCheck{"models": got}}
-				if err := writeHealth(&output, report, asJSON, []string{"models"}); err != nil {
+			checkOutput(t, healthReport{Checks: map[string]healthCheck{"models": got}})
+		})
+	}
+	for _, unavailable := range []string{"discovery", "registry"} {
+		t.Run(unavailable, func(t *testing.T) {
+			f := newDoctorFixture(t)
+			p := f.probe(t, nil, doctorFakeLedger{})
+			var discoveryErr error
+			if unavailable == "discovery" {
+				discoveryErr = errors.New("discovery failed")
+			} else {
+				writeDoctorFile(t, filepath.Join(p.stateRoot, "model-health.json"), "{", 0600)
+			}
+			p.projects = func(context.Context) (projects.Result, error) { return projects.Result{}, discoveryErr }
+			for _, tc := range []struct{ url, status string }{{"https://relay.invalid", healthUnknown}, {"", healthFail}} {
+				t.Setenv("AGENT_MODEL_PROXY_URL", tc.url)
+				doctor, err := newDoctorProbe()
+				if err != nil {
 					t.Fatal(err)
 				}
-				if strings.Contains(output.String(), token) {
-					t.Fatal("credential in doctor output")
+				p.modelSettings = doctor.modelSettings
+				report := p.run(context.Background())
+				got := report.Checks["models"]
+				if got.Status != tc.status {
+					t.Errorf("models status = %s, want %s", got.Status, tc.status)
 				}
+				if tc.status == healthFail && got.Reason != "模型中转站配置无效，网关与交叉审查无法启动" {
+					t.Error("doctor did not identify invalid relay configuration")
+				}
+				checkOutput(t, report)
 			}
 		})
 	}
 	p, err := newDoctorProbe()
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, tier := range []string{"claude::high", "claude:m;env:high"} {
+		t.Run(tier, func(t *testing.T) {
+			project.Repository.Env["AGENT_ROLE_REVIEWER"] = tier
+			project.Repository.Env["AGENT_ROLE_SECOND_REVIEWER"] = tier
+			roles := p.modelSettings().modelRoles(project)
+			for _, name := range []string{"second_reviewer", "cross_reviewer"} {
+				i := slices.IndexFunc(roles, func(r doctorModelRole) bool { return r.name == name })
+				if i < 0 {
+					t.Fatalf("missing %s", name)
+				}
+				endpoint := roles[i].endpoint
+				if !endpoint.Isolated || endpoint.BaseURL != "" || endpoint.AuthToken != "" {
+					t.Errorf("%s should probe with local login", name)
+				}
+			}
+		})
 	}
 	project.Repository.Env["AGENT_ROLE_REVIEWER"] = "codex:review:high"
 	project.Repository.Env["AGENT_ROLE_SECOND_REVIEWER"] = "codex:second:high"

@@ -399,6 +399,14 @@ func ModelRelay(home string) (map[string]string, error) {
 	return map[string]string{"ANTHROPIC_BASE_URL": address, "ANTHROPIC_AUTH_TOKEN": token}, nil
 }
 
+var relayShellLiteral = regexp.MustCompile(`^[A-Za-z0-9._/@+-]*$`)
+
+// RelayReviewer reports whether the generated Claude command can receive relay credentials.
+func RelayReviewer(command string) bool {
+	ref, ok := ReviewerRef(command)
+	return ok && ref.Agent == "claude" && relayShellLiteral.MatchString(ref.Model) && relayShellLiteral.MatchString(ref.Effort)
+}
+
 var assignment = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
 
 // AssignedKeys reports the keys ParseEnv reads as explicit, so driver exec and

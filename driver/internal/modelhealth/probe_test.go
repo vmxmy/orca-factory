@@ -109,6 +109,24 @@ func TestProbeEndpoint(t *testing.T) {
 
 func TestModelRelayProbe(t *testing.T) {
 	for _, agent := range []string{"claude", "codex"} {
+		t.Run(agent+"/inherited", func(t *testing.T) {
+			const token = "fake-inherited-probe-sentinel"
+			t.Setenv("AGENT_MODEL_PROXY_TOKEN", token)
+			t.Setenv("PROBE_INHERITED", "present")
+			dir := t.TempDir()
+			binary := filepath.Join(dir, "agent")
+			script := "#!/bin/sh\n" +
+				"test -z \"${AGENT_MODEL_PROXY_TOKEN+x}\" || exit 1\n" +
+				"env | grep -Fq '" + token + "' && exit 1\n" +
+				"test \"$PROBE_INHERITED\" = present && printf ok\n"
+			if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			got := modelhealth.Probe(context.Background(), modelhealth.Ref{Agent: agent}, dir, modelhealth.Endpoint{Binary: binary})
+			if got.State != modelhealth.OK {
+				t.Errorf("non-isolated probe inherited the wrong environment: %s", got.State)
+			}
+		})
 		for _, token := range []string{"", "fake-relay-token"} {
 			t.Run(agent+"/"+token, func(t *testing.T) {
 				dir := t.TempDir()

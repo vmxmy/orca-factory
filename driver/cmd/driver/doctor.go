@@ -224,9 +224,11 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		"host_memory":  p.checkHostMemory(),
 	}
 	if projectsErr != nil {
-		for _, name := range []string{"checkouts", "sync_prs", "ledger", "models"} {
-			checks[name] = unprobed("项目发现失败，无法列出已接管项目")
+		const reason = "项目发现失败，无法列出已接管项目"
+		for _, name := range []string{"checkouts", "sync_prs", "ledger"} {
+			checks[name] = unprobed(reason)
 		}
+		checks["models"] = p.modelSettings().unprobedModels(reason)
 	} else {
 		checks["checkouts"] = p.checkCheckouts(ctx, eligible)
 		checks["sync_prs"] = p.checkSyncPRs(ctx, eligible)
@@ -866,6 +868,15 @@ type doctorModelRole struct {
 	reason   string
 }
 
+const invalidRelayReason = "模型中转站配置无效，网关与交叉审查无法启动"
+
+func (s doctorModelSettings) unprobedModels(reason string) healthCheck {
+	if s.relayErr != nil {
+		return healthCheck{Status: healthFail, Reason: invalidRelayReason, unprobed: true}
+	}
+	return unprobed(reason)
+}
+
 // probeKey resolves an unset Binary on PATH, so the PATH agent and its absolute
 // path share one probe.
 func (r doctorModelRole) probeKey() string {
@@ -1021,11 +1032,18 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	roles = append(roles, s.intakeRole(env, intakeTier, pi))
 	for i, role := range roles {
 		if role.endpoint.Isolated && role.ref.Agent == "claude" {
-			roles[i].endpoint.BaseURL = s.relayEnv["ANTHROPIC_BASE_URL"]
-			roles[i].endpoint.AuthToken = s.relayEnv["ANTHROPIC_AUTH_TOKEN"]
 			if s.relayErr != nil {
 				roles[i].reason = "model_relay_invalid"
+				continue
 			}
+			if role.name != "intake" {
+				command, err := config.GenerateReviewerCommand(role.ref.String())
+				if err != nil || !config.RelayReviewer(command) {
+					continue
+				}
+			}
+			roles[i].endpoint.BaseURL = s.relayEnv["ANTHROPIC_BASE_URL"]
+			roles[i].endpoint.AuthToken = s.relayEnv["ANTHROPIC_AUTH_TOKEN"]
 		}
 		if role.reason == "" && !supportedModelAgent(role.ref.Agent) {
 			roles[i].reason = "unsupported_agent"
@@ -1057,7 +1075,7 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 	settings := p.modelSettings()
 	registry, err := modelhealth.Open(p.stateRoot)
 	if err != nil {
-		return unprobed("模型可用性登记无法读取")
+		return settings.unprobedModels("模型可用性登记无法读取")
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, modelhealth.ProbeTimeout)
 	defer cancel()
@@ -1134,7 +1152,7 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 	case settings.proxyErr != nil:
 		check.Status, check.Reason = healthFail, "模型代理配置无效，执行器无法启动"
 	case settings.relayErr != nil:
-		check.Status, check.Reason = healthFail, "模型中转站配置无效，网关与交叉审查无法启动"
+		check.Status, check.Reason = healthFail, invalidRelayReason
 	case invalid:
 		check.Status, check.Reason = healthFail, "仓库角色的模型档位配置无效"
 	case exhausted:

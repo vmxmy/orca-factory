@@ -708,7 +708,7 @@ worker 首轮使用 `default`。无论是否升档，`AGENT_TIER_CHAIN` 都须�
 
 每个已接管仓库都有 intake 行。doctor 先校验 Claude 档位，取 `AGENT_ROLE_INTAKE`，为空时取 `AGENT_TIER_STRONG`。两者都为空时，即使配置了 Pi，intake 仍显示 `unknown/not_configured`。校验通过后再看 `AGENT_INTAKE_PI`，依次取仓库、进程环境、机器 `driver.env` 的值。启用 Pi 时，intake 行显示 `pi:<provider>/<model>:<thinking>` 和 `unknown/unsupported_agent`。这类候选仍可重试，计入 `unknown` 汇总。
 
-Claude 的 `reviewer` 和 `reviewer_small` 探测使用执行器启动 reviewer 时的端点。配置有效的 `AGENT_MODEL_PROXY_URL` 时，两类 reviewer 使用该代理。intake 与飞书网关一致：总是解析机器 `driver.env`（解析失败时 intake 行为 `unknown/config_invalid`），`AGENT_INTAKE_CLAUDE`、`AGENT_INTAKE_PI` 的非空进程环境值再覆盖文件值并去空白；`AGENT_INTAKE_CLAUDE` 须为绝对路径（为空时取 PATH 上的 `claude`），否则 intake 行显示 `unknown/config_invalid`；探测默认只传 `HOME` 和 `PATH`。配置模型中转站地址与凭证后，Claude intake 探针另带 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`。交叉审查同样只向可解析为 Claude 的主 reviewer 与 `second_reviewer` 追加这两项，配置 `second_reviewer` 时另列 `cross_reviewer` 行探测该端点。旧式 reviewer 命令（`*_CMD`）是任意 shell：只含空白时按未配置处理；与结构化值生成的命令逐字相同、且模型名等不含 shell 引号或变量时按该值探测；其余不解析也不探测，该行报 `unknown/legacy_command`；PATH 上的 agent 与其绝对路径只探测一次。未配置代理的 reviewer、worker 和 resolver 继承 doctor 进程的环境，包括已有的 `ANTHROPIC_BASE_URL`。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
+Claude 的 `reviewer` 和 `reviewer_small` 探测使用执行器启动 reviewer 时的端点。配置有效的 `AGENT_MODEL_PROXY_URL` 时，两类 reviewer 使用该代理。intake 与飞书网关一致：总是解析机器 `driver.env`（解析失败时 intake 行为 `unknown/config_invalid`），`AGENT_INTAKE_CLAUDE`、`AGENT_INTAKE_PI` 的非空进程环境值再覆盖文件值并去空白；`AGENT_INTAKE_CLAUDE` 须为绝对路径（为空时取 PATH 上的 `claude`），否则 intake 行显示 `unknown/config_invalid`；探测默认只传 `HOME` 和 `PATH`。配置模型中转站地址与凭证后，Claude intake 探针另带 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`。配置 `second_reviewer` 时，doctor 另列 `cross_reviewer` 行探测交叉审查的主 reviewer。两行都按交叉审查的规则选择凭证：命令须与生成的 Claude 命令逐字相同、写明模型名，模型名和 effort 都只含允许的 shell 字面字符。`claude::<effort>` 使用本机登录。旧式 reviewer 命令（`*_CMD`）是任意 shell：只含空白时按未配置处理；与结构化值生成的命令逐字相同、且模型名等不含 shell 引号或变量时按该值探测；其余不解析也不探测，该行报 `unknown/legacy_command`；PATH 上的 agent 与其绝对路径只探测一次。非隔离探针从继承的环境中剔除 `AGENT_MODEL_PROXY_TOKEN`。未配置代理的 reviewer、worker 和 resolver 探针仍可继承已有的 `ANTHROPIC_BASE_URL`。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
 
 doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环境隔离）去重。在首个需要该组合的项目中发送一次 `Reply with exactly: ok`，因此同一模型的继承端点、reviewer 代理和 intake 各探测一次。冷却期内也照常探测，各角色显示本轮对应端点的结果；本轮未能确认（`unknown`）而该模型仍在冷却时，显示登记的不可用状态。各行按本轮开始时的登记判定，之后才写入登记，`watch --dry-run` 与实际巡检判定一致。整批探测并发执行，共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low`、`--sandbox read-only` 和 `--ephemeral`，不留会话文件。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
 
@@ -776,15 +776,15 @@ reviewer 经本机模型代理访问模型时，在机器 `~/.config/orca-factor
 - 值必须是 http(s) URL，否则 `driver exec` 启动失败。
 - worker 由 Orca `worker-start` 启动，driver 不向它传环境。worker 的 claude 从该机 `~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL` 取代理地址。
 
-隔离角色使用第三方中转站时，在同一机器文件配置 `AGENT_MODEL_PROXY_TOKEN`，并保留有效的 `AGENT_MODEL_PROXY_URL`。两个键各自优先取非空进程环境值，否则读取 `driver.env`，与 `ModelProxyURL` 的读取规则相同，不执行 shell 展开。仅配置 URL 或两项都不配时，隔离角色环境仍逐字保持原来的 `HOME`、`PATH`，使用现有 Claude 登录。只配置凭证、URL 不是 http(s) 或配置文件无法读取、解析时，网关启动失败，调度器拒绝启动交叉审查，doctor 的 `models` 为 `fail`。
+隔离角色使用第三方中转站时，只把凭证 `AGENT_MODEL_PROXY_TOKEN` 写入机器 `driver.env`，并配置有效的 `AGENT_MODEL_PROXY_URL`。执行器终端不支持手动导出凭证。两个键各自优先取非空进程环境值，否则读取 `driver.env`，与 `ModelProxyURL` 的读取规则相同，不执行 shell 展开。仅配置 URL 或两项都不配时，隔离角色环境仍逐字保持原来的 `HOME`、`PATH`，使用现有 Claude 登录。只配置凭证、URL 不是 http(s) 或配置文件无法读取、解析时，网关启动失败，调度器拒绝启动交叉审查，doctor 的 `models` 报 `fail`，即使项目发现失败或模型可用性登记无法读取。
 
 两项都配置时，`config.ModelRelay` 返回 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`，只用于以下隔离入口：
 
 - 飞书网关创建的 Claude intake 子进程。
-- 交叉审查中经 `config.ReviewerRef` 解析为 Claude 的命令。回退重跑按新命令重新决定环境，Codex 与无法解析的旧式命令不带这两项。
-- doctor 的 Claude `intake`、`second_reviewer`、`cross_reviewer` 探针。
+- 交叉审查的首跑和回退重跑都按当次命令决定。命令须与生成的 Claude 命令逐字相同，显式指定模型名，且模型名与 effort 只能含 ASCII 字母、数字或 `._/@+-`。`claude::<effort>` 使用本机登录。
+- doctor 的 Claude `intake` 探针。其 `second_reviewer` 和 `cross_reviewer` 探针与调度器共用上述命令判定。
 
-`reviewer`、`reviewer_small` 保持现有的 URL 代理用法，不注入新凭证。worker、resolver 和 pi intake 路径不变，不支持 `ANTHROPIC_API_KEY` 等别名。凭证不写入日志、错误信息或 doctor 的 JSON、文本输出。网关与 doctor 启动时各读取一次中转站配置，修改后需重启相应进程；调度器在 `startCrossReview` 读取。
+非隔离探针会从子进程环境中剔除 `AGENT_MODEL_PROXY_TOKEN`。`reviewer`、`reviewer_small` 保持现有的 URL 代理用法。worker、resolver 和 pi intake 路径不变，不支持 `ANTHROPIC_API_KEY` 等别名。凭证不写入日志、错误信息或 doctor 的 JSON、文本输出。网关与 doctor 启动时各读取一次中转站配置，修改后需重启相应进程；调度器在 `startCrossReview` 读取。
 
 intake 的拒读 settings 增加 `Read(/proc/**)`。测试只断言该字符串，沙箱中的假 Claude 不执行 settings，没有验证真实 Claude 是否阻止读取。pi intake 的 `piEnv` 仍透传 `ANTHROPIC_` 前缀变量。中转站拒绝凭证或额度耗尽时沿用模型不可用登记与回退，测试不验证中转站本身的可用性。
 

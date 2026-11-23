@@ -139,7 +139,7 @@ type crossReviewJob struct {
 
 func (j crossReviewJob) reviewerEnv(command string) []string {
 	env := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
-	if ref, ok := config.ReviewerRef(command); ok && ref.Agent == "claude" && len(j.relayEnv) != 0 {
+	if len(j.relayEnv) != 0 && config.RelayReviewer(command) {
 		env = append(env, "ANTHROPIC_BASE_URL="+j.relayEnv["ANTHROPIC_BASE_URL"], "ANTHROPIC_AUTH_TOKEN="+j.relayEnv["ANTHROPIC_AUTH_TOKEN"])
 	}
 	return env

@@ -692,12 +692,11 @@ func TestModelRelayGateway(t *testing.T) {
 	t.Setenv("AGENT_MODEL_PROXY_TOKEN", "")
 	file := filepath.Join(home, ".config/orca-factory/driver.env")
 	writeDoctorFile(t, file, "AGENT_MODEL_PROXY_URL=https://relay.invalid\nAGENT_MODEL_PROXY_TOKEN="+token+"\n", 0600)
-	relay, err := config.ModelRelay(home)
+	t.Setenv("AGENT_INTAKE_CLAUDE", "/bin/true")
+	runtime, err := newGatewayRuntime(home, "/bin/true", t.TempDir(), config.Tuning{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
-	runtime.relayEnv = relay
 	defer runtime.stop()
 	for _, prefix := range []string{"ONE", "TWO"} {
 		p := projects.Project{Prefix: prefix, Path: "/repo/" + prefix, Repository: config.Repository{Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "test/" + prefix, "AGENT_ROLE_INTAKE": "claude:m:high"}}}
