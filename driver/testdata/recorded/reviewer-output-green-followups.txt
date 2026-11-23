@@ -1,0 +1,9 @@
+{
+  "unit": "executor",
+  "verdict": "green",
+  "step": "review",
+  "reason": "当前 HEAD 0f7af25 相对 8f99bce 仅修改 driver/README.md。第 727 行已记录上一轮指出的两种多重故障交错，符合 Change 6、7 的人工裁定。本轮没有代码或测试改动。受只读环境限制，未独立运行 make test PACKAGES=./internal/scheduler 和 make race PACKAGES=./internal/scheduler，Change 5 仍待 coordinator 核验。\n后续建议：driver/README.md:727 的「上一段」应为「下一段」。第 729 行的人工恢复步骤适用于确认仍属模型搁置的票；若最新原因是 lane 3，应保留人工屏障。",
+  "evidence": [],
+  "scope": "driver/internal/scheduler/github_fresh.go driver/internal/scheduler/resolver.go driver/internal/scheduler/resolver_test.go driver/internal/scheduler/scheduler.go driver/internal/scheduler/scheduler_test.go driver/README.md driver/CONTRACTS.md driver/testdata/recorded/ledger-comments-model-park-operator-resume.json",
+  "lane": 2
+}

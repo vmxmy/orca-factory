@@ -134,6 +134,15 @@ func reviewVerdict(output string) (string, error) {
 	return result.Verdict, err
 }
 
+func reviewFollowUps(output string) string {
+	result, err := parseReviewResult(output)
+	if err != nil || result.Verdict != "green" {
+		return ""
+	}
+	_, followUps, _ := strings.Cut(result.Reason, "后续建议：")
+	return strings.TrimSpace(followUps)
+}
+
 // reviewFindings keeps only reason and evidence of a parsed red: the reviewer's
 // prose before the JSON is not part of its verdict.
 func reviewFindings(output string) string {

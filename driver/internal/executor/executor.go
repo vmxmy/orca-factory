@@ -737,7 +737,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		if pr != nil {
 			result.PR = *pr
 		} else {
-			body, err := e.pullRequestBody(ctx, t)
+			body, err := e.pullRequestBody(ctx, t, reviewFollowUps(mergeReviewOutput))
 			if err != nil {
 				return err
 			}
