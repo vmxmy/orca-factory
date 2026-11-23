@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -51,12 +50,9 @@ type budgetRecovery struct {
 	failure error
 }
 
-func (r *budgetRecovery) Correction(ctx context.Context, req CorrectionRequest) error {
+func (r *budgetRecovery) Correction(context.Context, CorrectionRequest) error {
 	r.sessions++
-	if r.failure != nil {
-		return r.failure
-	}
-	return os.WriteFile(req.Path, []byte(" \n\t"), 0600)
+	return r.failure
 }
 
 func TestBudgetCorrectionDependencyStop(t *testing.T) {
@@ -80,21 +76,6 @@ func TestBudgetCorrectionDependencyStop(t *testing.T) {
 			t.Fatal("external error leaked")
 		}
 	}
-}
-
-func TestBudgetEmptyCorrectionArtifact(t *testing.T) {
-	e, o, tools, _, l, ticket := recoveryFixture(t)
-	tools.emptyReviews = 1
-	tools.reviewReds = 1
-	r := &budgetRecovery{}
-	e.Recovery = r
-	var sleeps []time.Duration
-	e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
-	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Owner != machine.OwnerResolver || result.State.Infra != 3 || result.State.Corrections != 1 || r.sessions != 2 || r.children != 0 || len(o.starts) != 1 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
-		t.Fatalf("result=%+v err=%v sessions=%d children=%d sleeps=%v", result, err, r.sessions, r.children, sleeps)
-	}
-	assertBudgetHandoff(t, l)
 }
 
 func TestBudgetStartTaskListStop(t *testing.T) {

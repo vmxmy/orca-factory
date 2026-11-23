@@ -105,7 +105,6 @@ func (f *recoveryTools) Review(ctx context.Context, repo, base, head string, est
 type recoveryService struct {
 	sessions, children int
 	stalledFrom        int
-	missing            bool
 	complete           bool
 	requests           []CorrectionRequest
 }
@@ -113,9 +112,6 @@ type recoveryService struct {
 func (r *recoveryService) Correction(_ context.Context, req CorrectionRequest) error {
 	r.sessions++
 	r.requests = append(r.requests, req)
-	if r.missing {
-		return nil
-	}
 	if r.stalledFrom > 0 && req.Number >= r.stalledFrom {
 		return os.WriteFile(req.Path, []byte("\nSTALLED: 同一断言连续失败\a，步骤无新进展\n第二行\n"), 0600)
 	}
@@ -292,16 +288,6 @@ func TestCorrectionTierAndCap(t *testing.T) {
 		})
 	}
 }
-func TestCorrectionMissingArtifactBudget(t *testing.T) {
-	e, o, tools, s, l, ticket := recoveryFixture(t)
-	tools.gateReds = 1
-	s.missing = true
-	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Infra != 3 || result.State.Owner != machine.OwnerResolver || s.sessions != 3 || len(o.starts) != 1 || s.children != 0 {
-		t.Fatalf("result=%+v err=%v sessions=%d children=%d starts=%d", result, err, s.sessions, s.children, len(o.starts))
-	}
-	assertBudgetHandoff(t, l)
-}
 func TestInfraBudgetBackoff(t *testing.T) {
 	e, _, tools, _, _, ticket := recoveryFixture(t)
 	tools.emptyReviews = 2
@@ -433,8 +419,8 @@ func TestInfraBudgetSharedAcrossCorrection(t *testing.T) {
 	var sleeps []time.Duration
 	e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Infra != 2 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
-		t.Fatalf("result=%+v err=%v sleeps=%v", result, err, sleeps)
+	if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Infra != 1 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute}) || s.children != 1 {
+		t.Fatalf("result=%+v err=%v sleeps=%v children=%d", result, err, sleeps, s.children)
 	}
 }
 
@@ -446,6 +432,14 @@ func (s *missingOnceRecovery) Correction(ctx context.Context, r CorrectionReques
 		return nil
 	}
 	return s.recoveryService.Correction(ctx, r)
+}
+
+func (s *missingOnceRecovery) ChildTask(_ context.Context, _, _, spec, _ string) (string, error) {
+	if !strings.Contains(spec, "执行器代写：correction 会话未写出修复步骤（文件为空）") {
+		return "", errors.New("missing fallback in child task")
+	}
+	s.children++
+	return "child_task", nil
 }
 
 func TestResumeLegacyRunResult(t *testing.T) {

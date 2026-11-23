@@ -79,6 +79,8 @@
 
 部署新二进制前运行 `driver selftest --live`：对真实的 Orca、选定票据后端、git 与审查员命令只读地复核上述契约（只调用一次审查员）。
 
+correction 会话结束后，`dependencyStop` 判定的取消与全局依赖故障仍先停止。其余情况下，执行器先读 correction 文件，即使会话报错或超时也照用非空内容。首行是 `STALLED:` 时，首轮按 infra 重跑，第 2 次及以后按停滞规则交给处置 Agent。文件缺失、无法读取或只含空白时，执行器用 `执行器代写：correction 会话未写出修复步骤（超时|会话报错|文件为空）` 中对应的原因起头，另起一行附上本次失败原因，作为修复步骤派给 worker。该次兜底不重跑会话，也不计 infra。由 `executor.TestCorrectionSessionFallback` 覆盖（OF-661）。
+
 录制样本前删掉终端预览等可能含他人会话内容的字段，并确认不含任何凭据。
 
 执行器派工恢复保留旧 `executor.json` 字段及请求 UUID 的终端作用域；新增可选 `PendingParent` 记录未确认的 correction 子任务创建。首轮与 correction 都在变更前写入 pending，每次新 dispatch 清除上一轮的完成与释放资格；回执伴随错误返回时仍保留可用的 task、dispatch 和 worktree 身份。

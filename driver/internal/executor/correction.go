@@ -138,19 +138,22 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		if stop := dependencyStop(ctx, sessionErr); stop != nil {
 			return false, stop
 		}
-		info, statErr := os.Lstat(path)
-		if sessionErr != nil || statErr != nil || !info.Mode().IsRegular() {
-			if err := transition(machine.EvSessionEmpty, nil); err != nil {
-				return false, err
+		var correction []byte
+		if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
+			if data, err := os.ReadFile(path); err == nil {
+				correction = data
 			}
-			continue
 		}
-		correction, err := os.ReadFile(path)
-		if err != nil || strings.TrimSpace(string(correction)) == "" {
-			if err := transition(machine.EvSessionEmpty, nil); err != nil {
-				return false, err
+		if strings.TrimSpace(string(correction)) == "" {
+			reason := "文件为空"
+			switch {
+			case errors.Is(sessionErr, context.DeadlineExceeded):
+				reason = "超时"
+			case sessionErr != nil:
+				reason = "会话报错"
 			}
-			continue
+			correction = fmt.Appendf(nil, "执行器代写：correction 会话未写出修复步骤（%s）\n%s", reason, cause)
+			e.logger().Warn("correction fallback", "reason", reason, "correction", result.State.Corrections)
 		}
 		if reason, stalled := stallVerdict(correction); stalled {
 			result.StallReason = reason
