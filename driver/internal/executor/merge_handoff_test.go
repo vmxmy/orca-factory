@@ -87,3 +87,32 @@ func TestStartExistingPRWithoutHandoffHandsToResolver(t *testing.T) {
 		t.Fatalf("starts=%d gate=%d review=%d", len(o.workerRequests), tools.gateCalls, tools.reviewCalls)
 	}
 }
+
+func TestStartHandoffWithoutClock(t *testing.T) {
+	head := strings.Repeat("b", 40)
+	e, o, l, g, tools, ticket := fixture(t, head)
+	e.Now = nil
+	g.existing = &github.PullRequest{Number: 42, HTMLURL: "https://example.test/pr/42"}
+	g.existing.Head.SHA = head
+	result, err := e.Start(context.Background(), ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State.Owner != machine.OwnerResolver || result.State.Phase != machine.PhaseResolver || result.State.HumanReason != "existing PR has no frozen handoff" || result.State.Attempt != 2 {
+		t.Fatalf("unvalidated PR was not handed to resolver: %+v", result.State)
+	}
+	if len(l.updates) != 1 || l.updates[0] != "In Progress[auto-impl auto-failed] [ready-for-agent]" {
+		t.Fatalf("expected resolver labels: %v", l.updates)
+	}
+	if len(l.comments) != 1 || !strings.HasPrefix(l.comments[0], "Agent处置: existing PR has no frozen handoff\n") {
+		t.Fatalf("expected one resolver event: %v", l.comments)
+	}
+	for _, want := range []string{"PR #42", head, "阶段: Agent处置", "归属: 处置Agent term=term_exec run=- attempt=2"} {
+		if !strings.Contains(l.comments[0], want) {
+			t.Errorf("resolver event missing %q: %s", want, l.comments[0])
+		}
+	}
+	if len(o.workerRequests) != 0 || tools.gateCalls != 0 || tools.reviewCalls != 0 {
+		t.Fatalf("starts=%d gate=%d review=%d", len(o.workerRequests), tools.gateCalls, tools.reviewCalls)
+	}
+}
