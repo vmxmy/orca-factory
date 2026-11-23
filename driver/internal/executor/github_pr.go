@@ -25,7 +25,7 @@ func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
 	if task.ID != t.ID || task.Identifier != t.Identifier || !task.Complete || task.Metadata.ImportHold || task.NativeState != "open" {
 		return errors.New("task held, closed or identity changed")
 	}
-	repository := c.Repository()
+	repository := e.Config.Owner + "/" + e.Config.Repository
 	for _, label := range task.Labels.Nodes {
 		if label.Name == "auto-failed" {
 			return errors.New("failed task requires resolver")

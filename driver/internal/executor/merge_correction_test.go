@@ -75,6 +75,92 @@ func TestStartMergeCorrectionRepairsExistingPR(t *testing.T) {
 	}
 }
 
+func TestFrozenHandoffFeishuRepository(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		handoffRepository  string
+		progressRepository string
+		wantError          string
+	}{
+		{name: "merge correction", handoffRepository: "acme/demo", progressRepository: "acme/demo"},
+		{name: "wrong handoff repository", handoffRepository: "other/demo", progressRepository: "acme/demo", wantError: "invalid frozen execution handoff"},
+		{name: "wrong progress repository", handoffRepository: "acme/demo", progressRepository: "other/demo", wantError: "invalid frozen execution progress"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e, o, tools, recovery, l, ticket := recoveryFixture(t)
+			l.repository = "github.com/acme/demo"
+			ticket.NewTest, ticket.TestFiles, ticket.Assertion = true, "test/probe.sh test/assertion.json", "test/assertion.json"
+			tools.gateReds = 1
+			first, err := e.Execute(context.Background(), ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			g := e.GitHub.(*fakeGitHub)
+			g.existing = &first.PR
+			g.existing.Head.SHA = "new-sha"
+			var h merge.Handoff
+			for _, body := range l.comments {
+				for _, line := range strings.Split(body, "\n") {
+					if strings.HasPrefix(line, merge.HandoffPrefix) {
+						if err := json.Unmarshal([]byte(strings.TrimPrefix(line, merge.HandoffPrefix)), &h); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}
+			if h.Repository != "acme/demo" {
+				t.Fatalf("handoff repository = %q, want acme/demo", h.Repository)
+			}
+			for i, body := range l.comments {
+				l.comments[i] = strings.ReplaceAll(body, `"repository":"acme/demo"`, `"repository":"`+tt.handoffRepository+`"`)
+			}
+			raw, rawMarshalErr := json.Marshal(map[string]any{"version": 1, "queue_id": h.QueueID, "ticket_id": h.TicketID, "repository": tt.progressRepository, "pr": h.PR, "head": h.Head, "main": "main-sha", "phase": "correction", "corrections": 2, "catchup_rounds": 1, "infra": 1, "attempt": 2, "reason": "merged-result gate red"})
+			if rawMarshalErr != nil {
+				t.Fatal(rawMarshalErr)
+			}
+			l.comments = append(l.comments, "阶段: correction\n归属: 执行器\n"+merge.ProgressPrefix+string(raw))
+			tools.head = "repaired-sha"
+			g.existing.Head.SHA = "repaired-sha"
+			e.Config.Terminal = "new-executor"
+			e.Now = func() time.Time { return time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC) }
+			ticket.Assertion = "test/changed.json"
+			result, err := e.Start(context.Background(), ticket)
+			if tt.wantError != "" {
+				if err == nil || err.Error() != tt.wantError {
+					t.Fatalf("Start error = %v, want %q", err, tt.wantError)
+				}
+				if len(o.starts) != 2 || recovery.sessions != 1 || recovery.children != 1 {
+					t.Fatalf("invalid repository dispatched repair: starts=%d sessions=%d children=%d", len(o.starts), recovery.sessions, recovery.children)
+				}
+				return
+			}
+			frozen, readErr := os.ReadFile(filepath.Join(e.Config.Root, e.Config.Repository, ticket.Identifier, "gate.spec"))
+			if readErr != nil || !strings.Contains(string(frozen), "CHECK_ASSERTION: test/assertion.json\n") || strings.Contains(string(frozen), "CHECK_ASSERTION: test/changed.json") {
+				t.Fatalf("frozen assertion replaced during correction: %s %v", frozen, readErr)
+			}
+			if err != nil || result.State.Owner != machine.OwnerMerge || recovery.sessions != 2 || recovery.children != 2 || len(o.starts) != 3 {
+				t.Fatalf("correction bypassed: result=%+v err=%v sessions=%d children=%d starts=%d", result, err, recovery.sessions, recovery.children, len(o.starts))
+			}
+			if o.starts[2].Worktree != "path:/original/worktree" || tools.gateCalls != 3 || tools.reviewCalls != 2 || result.State.Corrections != 2 || result.State.Infra != 1 || result.State.Attempt != 2 {
+				t.Fatalf("lost repair/budgets: result=%+v starts=%+v gates=%d reviews=%d", result, o.starts, tools.gateCalls, tools.reviewCalls)
+			}
+			var next merge.Handoff
+			for _, body := range l.comments {
+				for _, line := range strings.Split(body, "\n") {
+					if strings.HasPrefix(line, merge.HandoffPrefix) {
+						if err := json.Unmarshal([]byte(strings.TrimPrefix(line, merge.HandoffPrefix)), &next); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}
+			if next.Head != "repaired-sha" || next.QueueID == h.QueueID || !next.EnqueuedAt.After(h.EnqueuedAt) || next.CatchupRounds != 1 || next.Corrections != 2 || next.Infra != 1 {
+				t.Fatalf("bad requeue: %+v", next)
+			}
+		})
+	}
+}
+
 func correctionReceipt(t *testing.T, e *Executor, l *budgetIssues, ticket Ticket, infra int) {
 	t.Helper()
 	var h merge.Handoff
