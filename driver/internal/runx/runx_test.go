@@ -45,6 +45,45 @@ func TestRunOutputAndSafeError(t *testing.T) {
 		t.Fatal("missing timeout accepted")
 	}
 }
+
+func TestRunGitDisablesTerminalPrompt(t *testing.T) {
+	t.Setenv("GIT_TERMINAL_PROMPT", "")
+	home := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		path    string
+		env     []string
+		prompt  string
+		home    string
+		wantErr bool
+	}{
+		{name: "git inherited environment", path: "git", prompt: "0", home: os.Getenv("HOME")},
+		{name: "git explicit environment", path: "git", env: []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}, prompt: "0", home: home},
+		{name: "git environment contains NUL", path: "git", env: []string{"HOME=" + home + "\x00b", "PATH=" + os.Getenv("PATH")}, wantErr: true},
+		{name: "non git", path: "other", home: os.Getenv("HOME")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tc.path)
+			if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n%s\\n' \"$GIT_TERMINAL_PROMPT\" \"$HOME\"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			got, err := Run(context.Background(), Spec{Path: path, Env: tc.env, Timeout: time.Second})
+			if tc.wantErr {
+				if err == nil || len(got) != 0 {
+					t.Fatalf("got stdout %q, error %v; want empty stdout and a start error", got, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := tc.prompt + "\n" + tc.home + "\n"; string(got) != want {
+				t.Fatalf("got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestOrcaPathIgnoresPATH(t *testing.T) {
 	home := t.TempDir()
 	fake := t.TempDir()
