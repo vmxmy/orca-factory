@@ -1811,6 +1811,25 @@ func TestModelRelayDoctor(t *testing.T) {
 			}
 		})
 	}
+	t.Run("legacy command equal to default model", func(t *testing.T) {
+		generated, err := config.GenerateReviewerCommand("claude::high")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
+			"AGENT_ROLE_REVIEWER_CMD": generated, "AGENT_ROLE_SECOND_REVIEWER_CMD": generated,
+		}}}
+		roles := p.modelSettings().modelRoles(legacy)
+		for _, name := range []string{"second_reviewer", "cross_reviewer"} {
+			i := slices.IndexFunc(roles, func(r doctorModelRole) bool { return r.name == name })
+			if i < 0 || roles[i].ref.Agent != "claude" {
+				t.Fatalf("legacy %s not probed as claude", name)
+			}
+			if roles[i].endpoint.AuthToken != "" || roles[i].endpoint.BaseURL != "" {
+				t.Errorf("relay reached legacy %s", name)
+			}
+		}
+	})
 	project.Repository.Env["AGENT_ROLE_REVIEWER"] = "codex:review:high"
 	project.Repository.Env["AGENT_ROLE_SECOND_REVIEWER"] = "codex:second:high"
 	project.Repository.Env["AGENT_INTAKE_PI"] = "anthropic/fable:high"

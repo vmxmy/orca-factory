@@ -465,6 +465,10 @@ func TestModelRelayCrossReview(t *testing.T) {
 	claude := modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2", Effort: "high"}
 	codex := modelhealth.Ref{Agent: "codex", Model: "gpt-6", Effort: "high"}
 	shellModel := modelhealth.Ref{Agent: "claude", Model: "m;env", Effort: "high"}
+	defaultModel, err := config.GenerateReviewerCommand("claude::high")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name        string
 		first, next modelhealth.Ref
@@ -478,6 +482,7 @@ func TestModelRelayCrossReview(t *testing.T) {
 		{name: "unconfigured", first: claude, wantRelay: []bool{false}},
 		{name: "default model", first: modelhealth.Ref{Agent: "claude", Effort: "high"}, relay: true, wantRelay: []bool{true}},
 		{name: "legacy Claude command without model", legacy: "claude -p --effort high", relay: true, wantRelay: []bool{false}},
+		{name: "legacy command equal to default model", legacy: defaultModel, relay: true, wantRelay: []bool{false}},
 		{name: "shell model", first: shellModel, relay: true, wantRelay: []bool{false}},
 		{name: "shell effort", first: modelhealth.Ref{Agent: "claude", Model: "m", Effort: "high*"}, relay: true, wantRelay: []bool{false}},
 		{name: "fallback to codex", first: claude, next: codex, relay: true, wantRelay: []bool{true, false}},
@@ -493,7 +498,7 @@ func TestModelRelayCrossReview(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			reviewer := crossReviewer{name: "reviewer", command: command, used: tc.first}
+			reviewer := crossReviewer{name: "reviewer", command: command, used: tc.first, structured: tc.legacy == ""}
 			if tc.next.Agent != "" {
 				reviewer.candidates = []modelhealth.Ref{tc.first, tc.next}
 			}

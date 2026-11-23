@@ -866,6 +866,7 @@ type doctorModelRole struct {
 	ref      modelhealth.Ref
 	endpoint modelhealth.Endpoint
 	reason   string
+	legacy   bool
 }
 
 const invalidRelayReason = "模型中转站配置无效，网关与交叉审查无法启动"
@@ -981,6 +982,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 				ref = modelhealth.Ref{}
 				modelRole = doctorModelRole{name: role.Role, reason: "legacy_command"}
 			}
+			modelRole.legacy = true
 		}
 		switch role.Role {
 		case "reviewer", "reviewer_small":
@@ -1038,7 +1040,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 			}
 			if role.name != "intake" {
 				command, err := config.GenerateReviewerCommand(role.ref.String())
-				if err != nil || !config.RelayReviewer(command) {
+				if err != nil || !config.RelayReviewer(command, !role.legacy) {
 					continue
 				}
 			}

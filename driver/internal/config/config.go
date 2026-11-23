@@ -401,13 +401,15 @@ func ModelRelay(home string) (map[string]string, error) {
 
 var relayShellLiteral = regexp.MustCompile(`^[A-Za-z0-9._/@+-]*$`)
 
-// RelayReviewer reports whether the generated Claude command can receive relay credentials.
-func RelayReviewer(command string) bool {
+// RelayReviewer reports whether the generated Claude command can receive relay
+// credentials. Only a structured reviewer key may use Claude's default model;
+// a legacy command must name its model.
+func RelayReviewer(command string, structured bool) bool {
 	ref, ok := ReviewerRef(command)
 	if ref.Agent != "claude" {
 		return false
 	}
-	if !ok && ref.Model == "" {
+	if !ok && structured && ref.Model == "" {
 		generated, err := GenerateReviewerCommand(ref.String())
 		ok = err == nil && generated == command
 	}

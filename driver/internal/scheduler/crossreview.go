@@ -122,6 +122,7 @@ func parseCrossReviewOpinion(name, output string) crossReviewOpinion {
 // candidates it may retry with after a model error.
 type crossReviewer struct {
 	name, command string
+	structured    bool
 	used          modelhealth.Ref
 	candidates    []modelhealth.Ref
 }
@@ -137,9 +138,9 @@ type crossReviewJob struct {
 	now                                        func() time.Time
 }
 
-func (j crossReviewJob) reviewerEnv(command string) []string {
+func (j crossReviewJob) reviewerEnv(command string, structured bool) []string {
 	env := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
-	if len(j.relayEnv) != 0 && config.RelayReviewer(command) {
+	if len(j.relayEnv) != 0 && config.RelayReviewer(command, structured) {
 		env = append(env, "ANTHROPIC_BASE_URL="+j.relayEnv["ANTHROPIC_BASE_URL"], "ANTHROPIC_AUTH_TOKEN="+j.relayEnv["ANTHROPIC_AUTH_TOKEN"])
 	}
 	return env
@@ -216,7 +217,7 @@ func (j crossReviewJob) execute(ctx context.Context) crossReviewRecord {
 			defer wg.Done()
 			// Keep ledger credentials out of reviewer processes.
 			spec := runx.Spec{Path: "/bin/sh", Args: []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", reviewer.command, input}, Dir: checkout, Timeout: crossReviewTimeout,
-				Env: j.reviewerEnv(reviewer.command)}
+				Env: j.reviewerEnv(reviewer.command, reviewer.structured)}
 			out, runErr := j.run(ctx, spec)
 			if runErr != nil {
 				used := reviewer.used
@@ -230,7 +231,7 @@ func (j crossReviewJob) execute(ctx context.Context) crossReviewRecord {
 				if retry {
 					if spec.Args[3], runErr = config.GenerateReviewerCommand(next.String()); runErr == nil {
 						runx.LoggerFrom(ctx).Info("cross review model unavailable; retrying with next candidate", "ticket", j.ticketID, "reviewer", reviewer.name, "unavailable", reviewer.used.String(), "selected", next.String())
-						spec.Env = j.reviewerEnv(spec.Args[3])
+						spec.Env = j.reviewerEnv(spec.Args[3], reviewer.structured)
 						if out, runErr = j.run(ctx, spec); runErr != nil {
 							if _, _, modelErr = config.RetryAfterModelError(j.stateRoot, next, nil, out, runErr, j.now()); modelErr != nil {
 								runx.LoggerFrom(ctx).Warn("cross review model error not recorded", "ticket", j.ticketID, "reviewer", reviewer.name, "err", modelErr)
@@ -486,7 +487,8 @@ func (r *Runtime) crossReviewCommand(ctx context.Context, repository config.Repo
 	if len(candidates) > 0 && used != candidates[0] {
 		runx.LoggerFrom(ctx).Info("cross review model falls back", "key", structuredKey, "configured", candidates[0].String(), "selected", used.String())
 	}
-	return crossReviewer{name: name, command: selected, used: used, candidates: candidates}, nil
+	structured := config.ReviewerKey(repository.Env, repository.Sources, structuredKey, commandKey) == structuredKey
+	return crossReviewer{name: name, command: selected, used: used, candidates: candidates, structured: structured}, nil
 }
 
 // readCrossReviews records which resolver dispatches already have a record.
