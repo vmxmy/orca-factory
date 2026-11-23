@@ -104,6 +104,26 @@ func (e *Executor) tierModel(tier string, configured modelhealth.Ref) modelhealt
 		now = e.Now
 	}
 	selected, err := config.SelectConfigured(e.Config.TierSettings, "AGENT_TIER_"+strings.ToUpper(tier), e.Config.Root, configured, now())
+	return e.workerModelSelection(tier, configured, selected, err)
+}
+
+func (e *Executor) firstDispatchModel(tier string, configured modelhealth.Ref) (modelhealth.Ref, string) {
+	key := config.FallbackKey("AGENT_TIER_" + strings.ToUpper(tier))
+	fallback, fallbackErr := config.ParseFallback(e.Config.TierSettings[key])
+	registry, registryErr := modelhealth.Open(e.Config.Root)
+	if err := errors.Join(fallbackErr, registryErr); err != nil {
+		return e.workerModelSelection(tier, configured, configured, err), ""
+	}
+	candidates := append([]modelhealth.Ref{configured}, fallback...)
+	now := e.Now()
+	selected, ok := registry.Select(candidates, now)
+	if !ok {
+		return modelhealth.Ref{}, modelParkReason(registry, candidates, now)
+	}
+	return e.workerModelSelection(tier, configured, selected, nil), ""
+}
+
+func (e *Executor) workerModelSelection(tier string, configured, selected modelhealth.Ref, err error) modelhealth.Ref {
 	if err != nil {
 		e.logger().Warn("worker model fallback unavailable; keeping configured model", "tier", tier, "error", logErrorSummary(err))
 	}

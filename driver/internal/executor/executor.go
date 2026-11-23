@@ -312,6 +312,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		return nil
 	}
 
+	var parkReason string
 	err = transition(machine.EvClaim, func(fx []machine.Effect) error {
 		if !hasEffect(fx, "worker-start-with-request-id") {
 			return errors.New("claim lacks worker effect")
@@ -404,13 +405,21 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return err
 		}
 		e.logger().Info("worker skills", "worker_skills", strings.Join(c.WorkerSkills, ","), "correction", cp.Corrections)
-		first := e.tierModel(cmp.Or(c.Tier, "default"), modelhealth.Ref{Agent: c.Agent, Model: c.Model, Effort: c.Effort})
+		var first modelhealth.Ref
+		first, parkReason = e.firstDispatchModel(cmp.Or(c.Tier, "default"), modelhealth.Ref{Agent: c.Agent, Model: c.Model, Effort: c.Effort})
+		if parkReason != "" {
+			return errFirstDispatchCooling
+		}
 		if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Spec: workerSpec, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: first.Agent, Model: first.Model, Effort: first.Effort}); err != nil {
 			return err
 		}
 		taskID, result.DispatchID = cp.Task, cp.Dispatch
 		return nil
 	})
+	if errors.Is(err, errFirstDispatchCooling) {
+		err = e.parkModel(ctx, t, &result, cp, parkReason)
+		return result, err
+	}
 	if err != nil {
 		return result, err
 	}
@@ -1133,6 +1142,8 @@ func (e *Executor) parkModel(ctx context.Context, t Ticket, result *Result, cp c
 
 // errModelStopped ends a wait whose worker stopModelUnavailable stopped.
 var errModelStopped = errors.New("worker stopped for an unavailable model")
+
+var errFirstDispatchCooling = errors.New("all first-dispatch models are cooling")
 
 func livenessFailure(reason string) *orca.WorkerReport {
 	return &orca.WorkerReport{Provenance: provenanceExecutorLiveness, Outcome: "failed", Body: reason}

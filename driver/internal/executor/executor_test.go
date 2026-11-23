@@ -504,7 +504,22 @@ func recordedWorkerScreen(t *testing.T, lines ...string) orca.Receipt {
 	return envelope.Result
 }
 
+type modelCoolingBaselineTools struct {
+	*fakeTools
+	root   string
+	status modelhealth.Status
+}
+
+func (f *modelCoolingBaselineTools) Baseline(context.Context, string) (string, error) {
+	registry, err := modelhealth.Open(f.root)
+	if err != nil {
+		return "", err
+	}
+	return "base-sha", registry.Record(f.status)
+}
+
 func TestFirstDispatchParksWhenTierCooling(t *testing.T) {
+	const duringBaseline = "fallback cools during baseline"
 	primary := modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2", Effort: "xhigh"}
 	fallback := modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}
 	for _, tc := range []struct {
@@ -519,9 +534,10 @@ func TestFirstDispatchParksWhenTierCooling(t *testing.T) {
 		{"fallback available", fallback.String(), false, time.Hour, false, fallback},
 		{"no fallback", "", false, time.Hour, true, modelhealth.Ref{}},
 		{"cooldown expired", fallback.String(), true, -time.Minute, false, primary},
+		{duringBaseline, fallback.String(), false, time.Hour, true, modelhealth.Ref{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e, o, ledger, _, _, ticket := fixture(t, "new-sha")
+			e, o, ledger, _, tools, ticket := fixture(t, "new-sha")
 			e.Config.Agent, e.Config.Model, e.Config.Effort = primary.Agent, primary.Model, primary.Effort
 			e.Config.TierSettings = map[string]string{"AGENT_TIER_DEFAULT_FALLBACK": tc.fallback}
 			now := e.Now()
@@ -538,6 +554,17 @@ func TestFirstDispatchParksWhenTierCooling(t *testing.T) {
 				if err := registry.Record(status); err != nil {
 					t.Fatal(err)
 				}
+			}
+			wantUpdates := []string{"Todo[parked] [ready-for-agent auto-impl auto-failed]"}
+			wantCommentsAtUpdate := []int{1}
+			if tc.name == duringBaseline {
+				e.Tools = &modelCoolingBaselineTools{
+					fakeTools: tools,
+					root:      e.Config.Root,
+					status:    modelhealth.Status{Ref: fallback, State: modelhealth.Unavailable, Reason: "model_not_found", Until: now.Add(time.Hour)},
+				}
+				wantUpdates = append([]string{"In Progress[auto-impl] []"}, wantUpdates...)
+				wantCommentsAtUpdate = []int{0, 1}
 			}
 			result, err := e.Execute(context.Background(), ticket)
 			if err != nil {
@@ -566,7 +593,7 @@ func TestFirstDispatchParksWhenTierCooling(t *testing.T) {
 			if !reflect.DeepEqual(ledger.comments, wantComments) {
 				t.Fatalf("comments=%q; want=%q", ledger.comments, wantComments)
 			}
-			if !reflect.DeepEqual(ledger.updates, []string{"Todo[parked] [ready-for-agent auto-impl auto-failed]"}) || !reflect.DeepEqual(ledger.commentsAtUpdate, []int{1}) {
+			if !reflect.DeepEqual(ledger.updates, wantUpdates) || !reflect.DeepEqual(ledger.commentsAtUpdate, wantCommentsAtUpdate) {
 				t.Fatalf("updates=%q commentsAtUpdate=%v", ledger.updates, ledger.commentsAtUpdate)
 			}
 			if result.State.Phase != machine.PhaseUnclaimed || result.State.Owner != machine.OwnerNone || result.State.ExecAlive || result.State.HumanReason != reason {
