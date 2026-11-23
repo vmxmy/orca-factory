@@ -291,6 +291,16 @@ func TestCorrectionTierAndCap(t *testing.T) {
 		})
 	}
 }
+func TestCorrectionMissingArtifactBudget(t *testing.T) {
+	e, o, tools, _, _, ticket := recoveryFixture(t)
+	tools.gateReds = 1
+	s := &fallbackRecovery{correction: func(context.Context, CorrectionRequest) error { return nil }}
+	e.Recovery = s
+	result, err := e.Execute(context.Background(), ticket)
+	if err != nil || result.State.Infra != 0 || result.State.Owner != machine.OwnerMerge || s.sessions != 1 || len(o.starts) != 2 || len(s.specs) != 1 || !strings.Contains(s.specs[0], "执行器代写：correction 会话未写出修复步骤（文件为空）") {
+		t.Fatalf("result=%+v err=%v sessions=%d specs=%q starts=%d", result, err, s.sessions, s.specs, len(o.starts))
+	}
+}
 func TestInfraBudgetBackoff(t *testing.T) {
 	e, _, tools, _, _, ticket := recoveryFixture(t)
 	tools.emptyReviews = 2

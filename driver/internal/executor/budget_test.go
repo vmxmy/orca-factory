@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -75,6 +76,22 @@ func TestBudgetCorrectionDependencyStop(t *testing.T) {
 		if strings.Contains(err.Error(), "secret-token") {
 			t.Fatal("external error leaked")
 		}
+	}
+}
+
+func TestBudgetEmptyCorrectionArtifact(t *testing.T) {
+	e, o, tools, _, _, ticket := recoveryFixture(t)
+	tools.emptyReviews = 1
+	tools.reviewReds = 1
+	r := &fallbackRecovery{correction: func(_ context.Context, req CorrectionRequest) error {
+		return os.WriteFile(req.Path, []byte(" \n\t"), 0600)
+	}}
+	e.Recovery = r
+	var sleeps []time.Duration
+	e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
+	result, err := e.Execute(context.Background(), ticket)
+	if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Infra != 1 || result.State.Corrections != 1 || r.sessions != 1 || len(r.specs) != 1 || !strings.Contains(r.specs[0], "执行器代写：correction 会话未写出修复步骤（文件为空）") || len(o.starts) != 2 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute}) {
+		t.Fatalf("result=%+v err=%v sessions=%d specs=%q sleeps=%v", result, err, r.sessions, r.specs, sleeps)
 	}
 }
 
