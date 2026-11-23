@@ -213,8 +213,19 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 		return "", tier, errors.New("review input write failed")
 	}
 	spec := runx.Spec{Path: "/bin/sh", Args: []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, name}, Dir: dir, Timeout: 10 * time.Minute}
+	if os.Getenv("AGENT_MODEL_PROXY_TOKEN") != "" {
+		env := os.Environ()
+		spec.Env = make([]string, 0, len(env))
+		for _, entry := range env {
+			if !strings.HasPrefix(entry, "AGENT_MODEL_PROXY_TOKEN=") {
+				spec.Env = append(spec.Env, entry)
+			}
+		}
+	} else if c.ModelProxyURL != "" {
+		spec.Env = os.Environ()
+	}
 	if c.ModelProxyURL != "" {
-		spec.Env = append(os.Environ(), "ANTHROPIC_BASE_URL="+c.ModelProxyURL)
+		spec.Env = append(spec.Env, "ANTHROPIC_BASE_URL="+c.ModelProxyURL)
 	}
 	b, err := c.runSpec(ctx, spec)
 	if err == nil {

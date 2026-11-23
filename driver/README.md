@@ -772,7 +772,7 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环�
 reviewer 经本机模型代理访问模型时，在机器 `~/.config/orca-factory/driver.env` 设置 `AGENT_MODEL_PROXY_URL=http://<主机>:<端口>`，不要把地址写进仓库 `agent-graph.env` 的审查命令。
 
 - 进程环境中的值优先；为空时读 `driver.env`。`driver exec` 运行在 Orca 终端中，不继承服务的 `EnvironmentFile`，所以必须能从文件读到。
-- 设置后，执行器和 `driver selftest` 启动 reviewer 子进程时注入 `ANTHROPIC_BASE_URL=<该值>`。未设置时，reviewer 子进程的环境与 driver 进程相同。
+- 设置后，执行器和 `driver selftest` 启动 reviewer 子进程时注入 `ANTHROPIC_BASE_URL=<该值>`。无论是否设置 URL，`reviewer` 和 `reviewer_small` 的子进程都剔除非空的 `AGENT_MODEL_PROXY_TOKEN`，其余变量照常继承。
 - 值必须是 http(s) URL，否则 `driver exec` 启动失败。
 - worker 由 Orca `worker-start` 启动，driver 不向它传环境。worker 的 claude 从该机 `~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL` 取代理地址。
 
@@ -784,7 +784,7 @@ reviewer 经本机模型代理访问模型时，在机器 `~/.config/orca-factor
 - 交叉审查的首跑和回退重跑都按当次命令决定。命令须与生成的 Claude 命令逐字相同，且模型名与 effort 只能含 ASCII 字母、数字或 `._/@+-`。
 - doctor 的 Claude `intake` 探针。其 `second_reviewer` 和 `cross_reviewer` 探针与调度器共用上述命令判定。使用默认模型的 Claude 结构化审查角色（如 `claude::high`）也带中转站地址与凭证。
 
-非隔离探针会从子进程环境中剔除 `AGENT_MODEL_PROXY_TOKEN`。`reviewer`、`reviewer_small` 保持现有的 URL 代理用法。worker、resolver 和 pi intake 路径不变，不支持 `ANTHROPIC_API_KEY` 等别名。凭证不写入日志、错误信息或 doctor 的 JSON、文本输出。网关与 doctor 启动时各读取一次中转站配置，修改后需重启相应进程；调度器在 `startCrossReview` 读取。
+非隔离探针会从子进程环境中剔除 `AGENT_MODEL_PROXY_TOKEN`。执行器和 `driver selftest --live` 启动 `reviewer` 或 `reviewer_small`（含 Codex 命令）时沿用原有代理 URL 配置，只从子进程环境中剔除非空的 `AGENT_MODEL_PROXY_TOKEN`。worker、resolver 和 pi intake 路径不变，不支持 `ANTHROPIC_API_KEY` 等别名。凭证不写入日志、错误信息或 doctor 的 JSON、文本输出。网关与 doctor 启动时各读取一次中转站配置，修改后需重启相应进程；调度器在 `startCrossReview` 读取。
 
 intake 的拒读 settings 增加 `Read(/proc/**)`。测试只断言该字符串，沙箱中的假 Claude 不执行 settings，没有验证真实 Claude 是否阻止读取。pi intake 的 `piEnv` 仍透传 `ANTHROPIC_` 前缀变量。中转站拒绝凭证或额度耗尽时沿用模型不可用登记与回退，测试不验证中转站本身的可用性。
 
