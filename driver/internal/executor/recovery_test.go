@@ -210,10 +210,11 @@ func TestCorrectionSessionFallback(t *testing.T) {
 		want       string
 		stalled    bool
 	}{
-		{"timeout", "", false, context.DeadlineExceeded, 1, "执行器代写：correction 会话未写出修复步骤（超时）", false},
+		{"timeout", "", false, context.DeadlineExceeded, 1, "执行器代写：correction 会话未写出修复步骤（超时），按下列失败证据修复。", false},
+		{"session failed", "", false, errors.New("exit status 1"), 1, "执行器代写：correction 会话未写出修复步骤（会话失败），按下列失败证据修复。", false},
 		{"written before exit error", "步骤 1：修复断言", true, errors.New("exit status 1"), 1, "步骤 1：修复断言", false},
-		{"empty file", "", true, nil, 1, "执行器代写：correction 会话未写出修复步骤（文件为空）", false},
-		{"whitespace file", " \n\t", true, nil, 1, "执行器代写：correction 会话未写出修复步骤（文件为空）", false},
+		{"empty file", "", true, nil, 1, "执行器代写：correction 会话未写出修复步骤（文件为空），按下列失败证据修复。", false},
+		{"whitespace file", " \n\t", true, nil, 1, "执行器代写：correction 会话未写出修复步骤（文件为空），按下列失败证据修复。", false},
 		{"second correction stalled", "STALLED: 重复失败", true, errors.New("exit status 1"), 2, "", true},
 		{"third correction stalled", "STALLED: 重复失败", true, errors.New("exit status 1"), 3, "", true},
 	} {
@@ -252,7 +253,12 @@ func TestCorrectionSessionFallback(t *testing.T) {
 			fallback := strings.HasPrefix(tt.want, "执行器代写：")
 			body := tt.want
 			if fallback {
-				body += "\n" + s.requests[0].Cause
+				log, err := os.ReadFile(failLogPath(e.Config, ticket))
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines := strings.Split(strings.TrimSpace(string(log)), "\n")
+				body += "\n失败原因：" + s.requests[0].Cause + "\n失败摘要：" + lines[len(lines)-1]
 			}
 			if want := fmt.Sprintf("correction %d/3\n%s\n", tt.correction, body); !strings.Contains(spec, want) {
 				t.Fatalf("spec=%q, want contiguous %q", spec, want)
@@ -261,6 +267,13 @@ func TestCorrectionSessionFallback(t *testing.T) {
 				t.Fatalf("written steps replaced with fallback: %q", spec)
 			}
 		})
+	}
+}
+
+func TestCorrectionFallbackOmitsEmptySummary(t *testing.T) {
+	want := "执行器代写：correction 会话未写出修复步骤（文件为空），按下列失败证据修复。\n失败原因：head CI failed"
+	if got := string(correctionFallback(nil, "head CI failed", "")); got != want {
+		t.Fatalf("fallback=%q, want %q", got, want)
 	}
 }
 

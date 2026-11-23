@@ -79,7 +79,7 @@
 
 部署新二进制前运行 `driver selftest --live`：对真实的 Orca、选定票据后端、git 与审查员命令只读地复核上述契约（只调用一次审查员）。
 
-correction 会话结束后，`dependencyStop` 判定的取消与全局依赖故障仍先停止。其余情况下，执行器先读 correction 文件，即使会话报错或超时也照用非空内容。首行是 `STALLED:` 时，首轮按 infra 重跑，第 2 次及以后按停滞规则交给处置 Agent。文件缺失、无法读取或只含空白时，执行器用 `执行器代写：correction 会话未写出修复步骤（超时|会话报错|文件为空）` 中对应的原因起头，另起一行附上本次失败原因，作为修复步骤派给 worker。该次兜底不重跑会话，也不计 infra。由 `executor.TestCorrectionSessionFallback` 覆盖（OF-661）。
+correction 会话结束后，`dependencyStop` 判定的取消与全局依赖故障仍先停止。其余情况下，执行器先读 correction 文件，即使会话报错或超时也照用非空内容。首行是 `STALLED:` 时，首轮按 infra 重跑，第 2 次及以后按停滞规则交给处置 Agent。文件缺失、无法读取或只含空白时，执行器以 `执行器代写：correction 会话未写出修复步骤（<原因>），按下列失败证据修复。` 起头，<原因> 为 `超时`、`会话失败` 或 `文件为空`；随后一行 `失败原因：<本次失败原因>`，本次失败摘要非空时再一行 `失败摘要：<摘要>`，作为修复步骤派给 worker。该次兜底不重跑会话，也不计 infra。由 `executor.TestCorrectionSessionFallback` 覆盖（OF-661）。
 
 录制样本前删掉终端预览等可能含他人会话内容的字段，并确认不含任何凭据。
 
