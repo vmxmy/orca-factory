@@ -10,7 +10,6 @@ require go.uber.org/goleak v1.3.0
 
 require (
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4
+	github.com/gorilla/websocket v1.5.3
 	github.com/larksuite/oapi-sdk-go/v3 v3.12.2
-	golang.org/x/net v0.26.0 // indirect
 )
