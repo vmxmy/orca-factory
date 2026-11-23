@@ -624,7 +624,7 @@ orca-factory-driver gear clear OF
 
 #### 交叉复审（只记录，OF-342）
 
-处置 Agent 的 `escalate` 带 `class`（`scope-extension` 或 `brief-interpretation`）和已推送的 `head`，且仓库配置了第二审查员时，调度器在转人后后台运行 reviewer 和第二 reviewer。审查角色优先取 `AGENT_ROLE_REVIEWER` / `AGENT_ROLE_SECOND_REVIEWER`（`agent:model:effort`，只支持 `codex` 与 `claude`），再取对应 `_CMD`，最后取方案里的结构化键；driver 统一生成 codex 的现网前缀与只读沙箱参数、claude 的现网只读参数。每个仓库同时只跑一个，提示词内嵌在 driver，两条命令只拿到 `HOME` 和 `PATH`。结果写成一条 `cross-review-v1:` 事件，`would_release` 记录本来是否放行。这一步**不放行**：票仍归人，不改标签，也不进合并队列，gate 也不运行。
+处置 Agent 的 `escalate` 带 `class`（`scope-extension` 或 `brief-interpretation`）和已推送的 `head`，且仓库配置了第二审查员时，调度器在转人后后台运行 reviewer 和第二 reviewer。审查角色优先取 `AGENT_ROLE_REVIEWER` / `AGENT_ROLE_SECOND_REVIEWER`（`agent:model:effort`，只支持 `codex` 与 `claude`），再取对应 `_CMD`，最后取方案里的结构化键；driver 统一生成 codex 的现网前缀与只读沙箱参数、claude 的现网只读参数。每个仓库同时只跑一个，提示词内嵌在 driver，两条命令默认只拿到 `HOME` 和 `PATH`；配置模型中转站地址与凭证后，可解析为 Claude 的命令另带 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`。结果写成一条 `cross-review-v1:` 事件，`would_release` 记录本来是否放行。这一步**不放行**：票仍归人，不改标签，也不进合并队列，gate 也不运行。
 
 `would_release` 为 true 要同时满足：两个 reviewer 都判 green，都没有判定新增权限或资金能力，改动路径都不在禁改范围。禁改范围是 `crossReviewForbidden`（`driver/internal/scheduler/crossreview.go`）、`AGENT_LANE3_GLOBS`、`AGENT_LANE2_MANUAL_GLOBS` 和 `AGENT_CROSS_REVIEW_FORBIDDEN_GLOBS`。reviewer 输出不合格、失败或超时都算不放行。serve 退出时取消进行中的复审，重启后按账本重跑。
 
@@ -708,13 +708,13 @@ worker 首轮使用 `default`。无论是否升档，`AGENT_TIER_CHAIN` 都须�
 
 每个已接管仓库都有 intake 行。doctor 先校验 Claude 档位，取 `AGENT_ROLE_INTAKE`，为空时取 `AGENT_TIER_STRONG`。两者都为空时，即使配置了 Pi，intake 仍显示 `unknown/not_configured`。校验通过后再看 `AGENT_INTAKE_PI`，依次取仓库、进程环境、机器 `driver.env` 的值。启用 Pi 时，intake 行显示 `pi:<provider>/<model>:<thinking>` 和 `unknown/unsupported_agent`。这类候选仍可重试，计入 `unknown` 汇总。
 
-Claude 的 `reviewer` 和 `reviewer_small` 探测使用执行器启动 reviewer 时的端点。配置有效的 `AGENT_MODEL_PROXY_URL` 时，两类 reviewer 使用该代理。intake 与飞书网关一致：总是解析机器 `driver.env`（解析失败时 intake 行为 `unknown/config_invalid`），`AGENT_INTAKE_CLAUDE`、`AGENT_INTAKE_PI` 的非空进程环境值再覆盖文件值并去空白；`AGENT_INTAKE_CLAUDE` 须为绝对路径（为空时取 PATH 上的 `claude`），否则 intake 行显示 `unknown/config_invalid`；探测只传 `HOME` 和 `PATH`。交叉审查以 `HOME` 和 `PATH` 运行主 reviewer 与 `second_reviewer`，配置 `second_reviewer` 时另列 `cross_reviewer` 行探测该端点。旧式 reviewer 命令（`*_CMD`）是任意 shell：只含空白时按未配置处理；与结构化值生成的命令逐字相同、且模型名等不含 shell 引号或变量时按该值探测；其余不解析也不探测，该行报 `unknown/legacy_command`；PATH 上的 agent 与其绝对路径只探测一次。未配置代理的 reviewer、worker 和 resolver 继承 doctor 进程的环境，包括已有的 `ANTHROPIC_BASE_URL`。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
+Claude 的 `reviewer` 和 `reviewer_small` 探测使用执行器启动 reviewer 时的端点。配置有效的 `AGENT_MODEL_PROXY_URL` 时，两类 reviewer 使用该代理。intake 与飞书网关一致：总是解析机器 `driver.env`（解析失败时 intake 行为 `unknown/config_invalid`），`AGENT_INTAKE_CLAUDE`、`AGENT_INTAKE_PI` 的非空进程环境值再覆盖文件值并去空白；`AGENT_INTAKE_CLAUDE` 须为绝对路径（为空时取 PATH 上的 `claude`），否则 intake 行显示 `unknown/config_invalid`；探测默认只传 `HOME` 和 `PATH`。配置模型中转站地址与凭证后，Claude intake 探针另带 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`。配置 `second_reviewer` 时，doctor 另列 `cross_reviewer` 行探测交叉审查的主 reviewer。两行都按交叉审查的规则选择凭证。命令须与生成的 Claude 命令逐字相同，模型名和 effort 都只能含允许的 shell 字面字符。使用默认模型的结构化角色（如 `claude::high`）也带中转站地址与凭证。旧式 `*_CMD` 命令必须写明模型名才带。旧式 reviewer 命令（`*_CMD`）是任意 shell：只含空白时按未配置处理；与结构化值生成的命令逐字相同、且模型名等不含 shell 引号或变量时按该值探测；其余不解析也不探测，该行报 `unknown/legacy_command`；PATH 上的 agent 与其绝对路径只探测一次。非隔离探针从继承的环境中剔除 `AGENT_MODEL_PROXY_TOKEN`。未配置代理的 reviewer、worker 和 resolver 探针仍可继承已有的 `ANTHROPIC_BASE_URL`。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
 
-doctor 跨仓库按 `agent:model` 和端点（二进制、代理、环境隔离）去重。在首个需要该组合的项目中发送一次 `Reply with exactly: ok`，因此同一模型的继承端点、reviewer 代理和 intake 各探测一次。冷却期内也照常探测，各角色显示本轮对应端点的结果；本轮未能确认（`unknown`）而该模型仍在冷却时，显示登记的不可用状态。各行按本轮开始时的登记判定，之后才写入登记，`watch --dry-run` 与实际巡检判定一致。整批探测并发执行，共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low`、`--sandbox read-only` 和 `--ephemeral`，不留会话文件。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
+doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环境隔离）去重。在首个需要该组合的项目中发送一次 `Reply with exactly: ok`，因此同一模型的继承端点、reviewer 代理和 intake 各探测一次。冷却期内也照常探测，各角色显示本轮对应端点的结果；本轮未能确认（`unknown`）而该模型仍在冷却时，显示登记的不可用状态。各行按本轮开始时的登记判定，之后才写入登记，`watch --dry-run` 与实际巡检判定一致。整批探测并发执行，共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low`、`--sandbox read-only` 和 `--ephemeral`，不留会话文件。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
 
 成功退出且回复恰为 `ok` 时记为 `ok`。以 `You've hit your … limit` 开头、在 `limit` 后结束或接 `·` 的 Claude 额度耗尽提示行（探测超时时须带 `· resets`；Codex 短句先于超时判定）和 Codex 录制样本中的 ChatGPT 账号不支持短句记为 `unavailable`。Claude 的重置提示按指定时区与观察年份解析，十二月收到的一月重置提示使用下一年。缺少有效的未来重置时间时冷却 30 分钟。超时、其他命令失败或无法识别的回复记为 `unknown`。
 
-`doctor` 和 `watch` 按 `agent:model` 合并本轮端点结果，同一模型的不同 effort 共用记录。任一端点不可用就记为 `unavailable`（多个端点不可用时取最晚的冷却截止时间），否则有端点未确认就记为 `unknown`，全部成功才记为 `ok`。`unknown` 不覆盖未到期的 `unavailable`，新的 `unavailable` 不缩短未到期的冷却，`ok` 会结束冷却。报告和登记都省略代理地址。冷却期供派工选择使用。
+`doctor` 和 `watch` 按 `agent:model` 合并本轮端点结果，同一模型的不同 effort 共用记录。任一端点不可用就记为 `unavailable`（多个端点不可用时取最晚的冷却截止时间），否则有端点未确认就记为 `unknown`，全部成功才记为 `ok`。`unknown` 不覆盖未到期的 `unavailable`，新的 `unavailable` 不缩短未到期的冷却，`ok` 会结束冷却。报告和登记都省略代理地址与凭证。冷却期供派工选择使用。
 
 登记默认写入 `~/.local/state/orca-factory/model-health.json`，可用 `AGENT_DRIVER_STATE_ROOT` 指定根目录。写入时在文件锁内重读登记，同键保留较新的 `checkedAt`，再用临时文件原子替换。登记读取失败时，检查报告 `unknown` 并加入 `errors`。写入失败时保留本轮各行与判定（`ok` 降为 `unknown`），原因追加写入失败并加入 `errors`。`watch --dry-run` 不写该登记，探测结果只用于本轮报告。
 
@@ -767,14 +767,26 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、环境隔离�
 
 人工恢复模型搁置的票时，要写一条以「恢复：」开头的评论，再去掉 `parked`、加回 `ready-for-agent`，使旧的模型搁置标记失效。通过 `issues comment` 写入的人工恢复评论也生效；人工评论不能创建模型搁置标记。
 
-## 模型代理（AGENT_MODEL_PROXY_URL）
+## 模型代理与中转站（AGENT_MODEL_PROXY_URL、AGENT_MODEL_PROXY_TOKEN）
 
 reviewer 经本机模型代理访问模型时，在机器 `~/.config/orca-factory/driver.env` 设置 `AGENT_MODEL_PROXY_URL=http://<主机>:<端口>`，不要把地址写进仓库 `agent-graph.env` 的审查命令。
 
 - 进程环境中的值优先；为空时读 `driver.env`。`driver exec` 运行在 Orca 终端中，不继承服务的 `EnvironmentFile`，所以必须能从文件读到。
-- 设置后，执行器和 `driver selftest` 启动 reviewer 子进程时注入 `ANTHROPIC_BASE_URL=<该值>`。未设置时，reviewer 子进程的环境与 driver 进程相同。
+- 设置后，执行器和 `driver selftest` 启动 reviewer 子进程时注入 `ANTHROPIC_BASE_URL=<该值>`。无论是否设置 URL，`reviewer` 和 `reviewer_small` 的子进程都剔除非空的 `AGENT_MODEL_PROXY_TOKEN`，其余变量照常继承。
 - 值必须是 http(s) URL，否则 `driver exec` 启动失败。
 - worker 由 Orca `worker-start` 启动，driver 不向它传环境。worker 的 claude 从该机 `~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL` 取代理地址。
+
+隔离角色使用第三方中转站时，只把凭证 `AGENT_MODEL_PROXY_TOKEN` 写入机器 `driver.env`，并配置有效的 `AGENT_MODEL_PROXY_URL`。执行器终端不支持手动导出凭证。两个键各自优先取非空进程环境值，否则读取 `driver.env`，与 `ModelProxyURL` 的读取规则相同，不执行 shell 展开。仅配置 URL 或两项都不配时，隔离角色环境仍逐字保持原来的 `HOME`、`PATH`，使用现有 Claude 登录。只配置凭证、URL 不是 http(s) 或配置文件无法读取、解析时，网关启动失败，调度器拒绝启动交叉审查，doctor 的 `models` 报 `fail`，即使项目发现失败或模型可用性登记无法读取。
+
+两项都配置时，`config.ModelRelay` 返回 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`，只用于以下隔离入口：
+
+- 飞书网关创建的 Claude intake 子进程。
+- 交叉审查的首跑和回退重跑都按当次命令决定。命令须与生成的 Claude 命令逐字相同，且模型名与 effort 只能含 ASCII 字母、数字或 `._/@+-`。
+- doctor 的 Claude `intake` 探针。其 `second_reviewer` 和 `cross_reviewer` 探针与调度器共用上述命令判定。使用默认模型的 Claude 结构化审查角色（如 `claude::high`）也带中转站地址与凭证。旧式 `*_CMD` 命令必须写明模型名才带；即使与 `claude::high` 生成的命令逐字相同，也不带（`TestModelRelayCrossReview`）。
+
+非隔离探针会从子进程环境中剔除 `AGENT_MODEL_PROXY_TOKEN`。执行器和 `driver selftest --live` 启动 `reviewer` 或 `reviewer_small`（含 Codex 命令）时沿用原有代理 URL 配置，只从子进程环境中剔除非空的 `AGENT_MODEL_PROXY_TOKEN`。worker、resolver 和 pi intake 路径不变，不支持 `ANTHROPIC_API_KEY` 等别名。凭证不写入日志、错误信息或 doctor 的 JSON、文本输出。网关与 doctor 启动时各读取一次中转站配置，修改后需重启相应进程；调度器在 `startCrossReview` 读取。
+
+intake 的拒读 settings 增加 `Read(/proc/**)`。测试只断言该字符串，沙箱中的假 Claude 不执行 settings，没有验证真实 Claude 是否阻止读取。pi intake 的 `piEnv` 仍透传 `ANTHROPIC_` 前缀变量。中转站拒绝凭证或额度耗尽时沿用模型不可用登记与回退，测试不验证中转站本身的可用性。
 
 ## 可调参数（driver.toml）
 
@@ -913,8 +925,9 @@ Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stde
 - `--tools Read,Grep,Glob,Skill`，`--restricted`（文件工具限于工作目录，忽略用户、
   项目和本地 settings 及其 hooks），`--permission-mode dontAsk`（需授权的调用直接拒绝），
   `--strict-mcp-config`（不加载 MCP），`--settings` 再拒绝读取 `~/.claude`、`~/.config`、
-  `~/.local/state`、`~/.ssh`。
-- 环境只含 `PATH` 与 `HOME`；模型与 effort 通过 `--model`、`--effort` 传入。
+  `~/.local/state`、`~/.ssh`、`/proc`。
+- 环境默认只含 `PATH` 与 `HOME`；配置中转站地址与凭证时另带 `ANTHROPIC_BASE_URL` 和
+  `ANTHROPIC_AUTH_TOKEN`。模型与 effort 通过 `--model`、`--effort` 传入。
   飞书、GitHub 凭据不进入 Agent 进程。
 - `--restricted` 不加载用户技能目录，grilling 技能因此不可用；角色说明自带追问规则。
 

@@ -1009,7 +1009,7 @@ func TestDoctorModelsInvalidProxyReportsAllChecks(t *testing.T) {
 	assertDoctorModel(t, rows, "orca-factory", "reviewer", "claude:review:low", "unknown", "model_proxy_invalid")
 	assertDoctorModel(t, rows, "orca-factory", "reviewer_small", "claude:small:high", "unknown", "model_proxy_invalid")
 	assertDoctorModel(t, rows, "orca-factory", "worker_default", "codex:m:high", "ok", "probe_ok")
-	assertDoctorModel(t, rows, "orca-factory", "intake", "claude:m:high", "ok", "probe_ok")
+	assertDoctorModel(t, rows, "orca-factory", "intake", "claude:m:high", "unknown", "model_relay_invalid")
 }
 
 func TestDoctorModelsConcurrent(t *testing.T) {
@@ -1691,5 +1691,151 @@ func TestHostMemoryNotificationThroughStatusBackend(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("notification requests = %d, want 1", calls)
+	}
+}
+
+func TestModelRelayDoctor(t *testing.T) {
+	const token = "fake-doctor-relay-sentinel"
+	checkOutput := func(t *testing.T, report healthReport) {
+		t.Helper()
+		for _, asJSON := range []bool{true, false} {
+			var output bytes.Buffer
+			if err := writeHealth(&output, report, asJSON, doctorChecks); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(output.String(), token) {
+				t.Fatal("credential in doctor output")
+			}
+		}
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_MODEL_PROXY_URL", "https://relay.invalid")
+	t.Setenv("AGENT_MODEL_PROXY_TOKEN", token)
+	t.Setenv("AGENT_INTAKE_PI", "")
+	t.Setenv("AGENT_INTAKE_CLAUDE", "/opt/test/claude")
+	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "claude:worker:high", "AGENT_ROLE_RESOLVER": "claude:resolver:high",
+		"AGENT_ROLE_REVIEWER": "claude:review:high", "AGENT_ROLE_REVIEWER_SMALL": "claude:small:high",
+		"AGENT_ROLE_SECOND_REVIEWER": "claude:second:high", "AGENT_ROLE_INTAKE": "claude:intake:high",
+	}}}
+	for _, url := range []string{"https://relay.invalid", "", "ftp://" + token} {
+		t.Run(url, func(t *testing.T) {
+			t.Setenv("AGENT_MODEL_PROXY_URL", url)
+			p, err := newDoctorProbe()
+			if err != nil {
+				t.Fatal("doctor constructor failed")
+			}
+			p.stateRoot = t.TempDir()
+			settings := p.modelSettings()
+			for _, role := range settings.modelRoles(project) {
+				isolated := role.name == "intake" || role.name == "second_reviewer" || role.name == "cross_reviewer"
+				if url == "https://relay.invalid" && isolated {
+					if role.endpoint.BaseURL != url || role.endpoint.AuthToken != token {
+						t.Errorf("relay missing from %s", role.name)
+					}
+					without := role
+					without.endpoint.AuthToken = ""
+					if without.probeKey() == role.probeKey() {
+						t.Error("probe key ignores credentials")
+					}
+				} else if role.endpoint.AuthToken != "" {
+					t.Errorf("credential reached %s", role.name)
+				}
+				if role.name == "reviewer" || role.name == "reviewer_small" {
+					if role.endpoint.BaseURL != settings.proxyURL {
+						t.Error("reviewer URL behavior changed")
+					}
+				}
+			}
+			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
+				return modelhealth.Classify(ref, "ok", nil, p.now)
+			}
+			got := p.checkModels(context.Background(), []projects.Project{project}, nil)
+			if url != "https://relay.invalid" && got.Status != "fail" {
+				t.Fatalf("invalid relay status=%s", got.Status)
+			}
+			checkOutput(t, healthReport{Checks: map[string]healthCheck{"models": got}})
+		})
+	}
+	for _, unavailable := range []string{"discovery", "registry"} {
+		t.Run(unavailable, func(t *testing.T) {
+			f := newDoctorFixture(t)
+			p := f.probe(t, nil, doctorFakeLedger{})
+			var discoveryErr error
+			if unavailable == "discovery" {
+				discoveryErr = errors.New("discovery failed")
+			} else {
+				writeDoctorFile(t, filepath.Join(p.stateRoot, "model-health.json"), "{", 0600)
+			}
+			p.projects = func(context.Context) (projects.Result, error) { return projects.Result{}, discoveryErr }
+			for _, tc := range []struct{ url, status string }{{"https://relay.invalid", healthUnknown}, {"", healthFail}} {
+				t.Setenv("AGENT_MODEL_PROXY_URL", tc.url)
+				doctor, err := newDoctorProbe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				p.modelSettings = doctor.modelSettings
+				report := p.run(context.Background())
+				got := report.Checks["models"]
+				if got.Status != tc.status {
+					t.Errorf("models status = %s, want %s", got.Status, tc.status)
+				}
+				if tc.status == healthFail && got.Reason != "模型中转站配置无效，网关与交叉审查无法启动" {
+					t.Error("doctor did not identify invalid relay configuration")
+				}
+				checkOutput(t, report)
+			}
+		})
+	}
+	p, err := newDoctorProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ tier, wantURL, wantToken string }{
+		{tier: "claude::high", wantURL: "https://relay.invalid", wantToken: token},
+		{tier: "claude:m;env:high"},
+	} {
+		t.Run(tc.tier, func(t *testing.T) {
+			project.Repository.Env["AGENT_ROLE_REVIEWER"] = tc.tier
+			project.Repository.Env["AGENT_ROLE_SECOND_REVIEWER"] = tc.tier
+			roles := p.modelSettings().modelRoles(project)
+			for _, name := range []string{"second_reviewer", "cross_reviewer"} {
+				i := slices.IndexFunc(roles, func(r doctorModelRole) bool { return r.name == name })
+				if i < 0 {
+					t.Fatalf("missing %s", name)
+				}
+				endpoint := roles[i].endpoint
+				if !endpoint.Isolated || endpoint.BaseURL != tc.wantURL || endpoint.AuthToken != tc.wantToken {
+					t.Errorf("unexpected relay endpoint for %s", name)
+				}
+			}
+		})
+	}
+	t.Run("legacy command equal to default model", func(t *testing.T) {
+		generated, err := config.GenerateReviewerCommand("claude::high")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
+			"AGENT_ROLE_REVIEWER_CMD": generated, "AGENT_ROLE_SECOND_REVIEWER_CMD": generated,
+		}}}
+		roles := p.modelSettings().modelRoles(legacy)
+		for _, name := range []string{"second_reviewer", "cross_reviewer"} {
+			i := slices.IndexFunc(roles, func(r doctorModelRole) bool { return r.name == name })
+			if i < 0 || roles[i].ref.Agent != "claude" {
+				t.Fatalf("legacy %s not probed as claude", name)
+			}
+			if roles[i].endpoint.AuthToken != "" || roles[i].endpoint.BaseURL != "" {
+				t.Errorf("relay reached legacy %s", name)
+			}
+		}
+	})
+	project.Repository.Env["AGENT_ROLE_REVIEWER"] = "codex:review:high"
+	project.Repository.Env["AGENT_ROLE_SECOND_REVIEWER"] = "codex:second:high"
+	project.Repository.Env["AGENT_INTAKE_PI"] = "anthropic/fable:high"
+	for _, role := range p.modelSettings().modelRoles(project) {
+		if role.ref.Agent != "claude" && (role.endpoint.BaseURL != "" || role.endpoint.AuthToken != "") {
+			t.Errorf("relay reached %s", role.name)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,5 +250,43 @@ func TestTuningDefaultsWhenAbsent(t *testing.T) {
 	}
 	if c.Tuning.Scheduler.UnregisteredGrace != 3*time.Minute {
 		t.Fatalf("scheduler defaults: %+v", c.Tuning.Scheduler)
+	}
+}
+
+func TestModelRelayEnv(t *testing.T) {
+	const token = "fake-relay-token-sentinel"
+	for _, tc := range []struct {
+		name, file, url, token string
+		want                   map[string]string
+		fail                   bool
+	}{
+		{name: "empty"},
+		{name: "url only", file: "AGENT_MODEL_PROXY_URL=https://relay.invalid\n"},
+		{name: "both", file: "AGENT_MODEL_PROXY_URL=https://relay.invalid\nAGENT_MODEL_PROXY_TOKEN=" + token + "\n", want: map[string]string{"ANTHROPIC_BASE_URL": "https://relay.invalid", "ANTHROPIC_AUTH_TOKEN": token}},
+		{name: "token only", token: token, fail: true},
+		{name: "invalid scheme", url: "ftp://" + token, token: token, fail: true},
+		{name: "invalid url", url: "https://relay.invalid/" + token + "%", token: token, fail: true},
+		{name: "malformed file", file: "AGENT_MODEL_PROXY_TOKEN='" + token, fail: true},
+		{name: "process overrides", file: "AGENT_MODEL_PROXY_URL=https://file.invalid\nAGENT_MODEL_PROXY_TOKEN=file-fake\n", url: "http://process.invalid", token: token, want: map[string]string{"ANTHROPIC_BASE_URL": "http://process.invalid", "ANTHROPIC_AUTH_TOKEN": token}},
+		{name: "per key fallback", file: "AGENT_MODEL_PROXY_URL=https://file.invalid\nAGENT_MODEL_PROXY_TOKEN=file-fake\n", token: token, want: map[string]string{"ANTHROPIC_BASE_URL": "https://file.invalid", "ANTHROPIC_AUTH_TOKEN": token}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("AGENT_MODEL_PROXY_URL", tc.url)
+			t.Setenv("AGENT_MODEL_PROXY_TOKEN", tc.token)
+			if tc.file != "" {
+				writeProfileTestFile(t, filepath.Join(home, ".config/orca-factory/driver.env"), tc.file)
+			}
+			got, err := ModelRelay(home)
+			if (err != nil) != tc.fail {
+				t.Fatalf("error presence = %v, want %v", err != nil, tc.fail)
+			}
+			if err != nil && strings.Contains(err.Error(), token) {
+				t.Fatal("credential leaked in error")
+			}
+			if !maps.Equal(got, tc.want) {
+				t.Fatal("unexpected relay environment")
+			}
+		})
 	}
 }

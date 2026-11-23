@@ -126,8 +126,9 @@ func intakeLedger(ctx context.Context, env map[string]string, tuning config.Tuni
 // rediscovers the live eligible set, but only the first topic that actually
 // dispatches to a given prefix pays for building its Store and Runner.
 type projectRuntime struct {
-	mu     sync.Mutex
-	claude string
+	relayEnv map[string]string
+	mu       sync.Mutex
+	claude   string
 	// piTier selects the pi --mode rpc execution path when non-empty
 	// (AGENT_INTAKE_PI); piBinaryErr defers the "pi not installed" failure
 	// to projects that actually opt into the path.
@@ -155,6 +156,16 @@ type projectRuntime struct {
 func newProjectRuntime(claude, cacheDir string, tuning config.Tuning) *projectRuntime {
 	return &projectRuntime{claude: claude, cacheDir: cacheDir, tuning: tuning, built: map[string]*intake.Runner{}, projects: map[string]intake.Project{}, ledgers: map[string]issues.Store{},
 		sources: map[string]querySource{}, readers: defaultEvidenceReaders()}
+}
+
+func newGatewayRuntime(home, claude, cacheDir string, tuning config.Tuning) (*projectRuntime, error) {
+	relayEnv, err := config.ModelRelay(home)
+	if err != nil {
+		return nil, err
+	}
+	runtime := newProjectRuntime(claude, cacheDir, tuning)
+	runtime.relayEnv = relayEnv
+	return runtime, nil
 }
 
 // setPi installs the gateway-wide pi RPC configuration: the tier comes from
@@ -233,6 +244,9 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	// core/gate.sh always treats scripts/agent-gates/* as lane 2.
 	project.Lane2Globs, project.Lane3Globs = "scripts/agent-gates/* "+p.Repository.Env["AGENT_LANE2_GLOBS"], p.Repository.Env["AGENT_LANE3_GLOBS"]
 	runner := &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Model: model, Effort: effort, Fallback: fallback, StateRoot: logStateRoot(), Timeout: 5 * time.Minute, Tickets: intakeTickets(store, p.Path, r.readers)}
+	if piTier == "" {
+		runner.ModelURL, runner.ModelToken = r.relayEnv["ANTHROPIC_BASE_URL"], r.relayEnv["ANTHROPIC_AUTH_TOKEN"]
+	}
 	if piTier != "" {
 		runner.PiBinary = r.piBinary
 		runner.PiProvider, runner.PiModel, runner.PiThinking = piProvider, piModel, piThinking
@@ -704,7 +718,10 @@ func runFeishuGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runtime := newProjectRuntime(claude, cacheDir, cfg.Tuning)
+	runtime, err := newGatewayRuntime(home, claude, cacheDir, cfg.Tuning)
+	if err != nil {
+		return err
+	}
 	runtime.setPi(settings["AGENT_INTAKE_PI"], filepath.Join(logStateRoot(), "intake-pi-sessions"), filepath.Join(home, ".pi", "agent"))
 	defer runtime.stop()
 	orcaClient := &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}

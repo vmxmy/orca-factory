@@ -37,15 +37,16 @@ type Turn struct {
 
 // agentSettings deny reads of credential and state directories on top of
 // --restricted, which already confines file tools to the checkout.
-const agentSettings = `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.config/**)","Read(~/.local/state/**)","Read(~/.ssh/**)"]}}`
+const agentSettings = `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.config/**)","Read(~/.local/state/**)","Read(~/.ssh/**)","Read(/proc/**)"]}}`
 
 // Runner runs the read-only intake agent with claude -p in a detached checkout
-// of origin/main. The agent receives no credentials and no write tools. When
-// PiBinary is set, turns run against a resident pi --mode rpc process per
+// of origin/main. The agent receives only configured model relay credentials
+// and no write tools. When PiBinary is set, turns run against a resident pi --mode rpc process per
 // session (OF-416) instead; every other field below applies only to the
 // claude path, and the zero value selects it exactly as before.
 type Runner struct {
 	Claude, Repo, Checkout, Model, Effort string
+	ModelURL, ModelToken                  string
 	// Fallback lists the claude models each turn tries in order when the
 	// model registry under StateRoot marks Model unavailable.
 	Fallback  []modelhealth.Ref
@@ -191,6 +192,9 @@ func (r *Runner) claude(ctx context.Context, flag string, t Turn, model modelhea
 	cmd := exec.CommandContext(ctx, bwrap, append(sandbox, args...)...)
 	cmd.Dir = r.Checkout
 	cmd.Env = []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+	if r.ModelURL != "" && r.ModelToken != "" {
+		cmd.Env = append(cmd.Env, "ANTHROPIC_BASE_URL="+r.ModelURL, "ANTHROPIC_AUTH_TOKEN="+r.ModelToken)
+	}
 	cmd.Stdin = strings.NewReader(t.Prompt)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }

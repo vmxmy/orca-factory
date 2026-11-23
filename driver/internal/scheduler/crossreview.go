@@ -122,11 +122,13 @@ func parseCrossReviewOpinion(name, output string) crossReviewOpinion {
 // candidates it may retry with after a model error.
 type crossReviewer struct {
 	name, command string
+	structured    bool
 	used          modelhealth.Ref
 	candidates    []modelhealth.Ref
 }
 
 type crossReviewJob struct {
+	relayEnv                                   map[string]string
 	key, ticketID, repo, dispatch, class, head string
 	scope, forbiddenGlobs                      []string
 	reviewers                                  [2]crossReviewer
@@ -134,6 +136,14 @@ type crossReviewJob struct {
 	brief                                      string
 	run                                        func(context.Context, runx.Spec) ([]byte, error)
 	now                                        func() time.Time
+}
+
+func (j crossReviewJob) reviewerEnv(command string, structured bool) []string {
+	env := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+	if len(j.relayEnv) != 0 && config.RelayReviewer(command, structured) {
+		env = append(env, "ANTHROPIC_BASE_URL="+j.relayEnv["ANTHROPIC_BASE_URL"], "ANTHROPIC_AUTH_TOKEN="+j.relayEnv["ANTHROPIC_AUTH_TOKEN"])
+	}
+	return env
 }
 
 func (j crossReviewJob) git(ctx context.Context, dir string, timeout time.Duration, args ...string) (string, error) {
@@ -205,9 +215,9 @@ func (j crossReviewJob) execute(ctx context.Context) crossReviewRecord {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Only HOME and PATH: the service environment holds ledger credentials.
+			// Keep ledger credentials out of reviewer processes.
 			spec := runx.Spec{Path: "/bin/sh", Args: []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", reviewer.command, input}, Dir: checkout, Timeout: crossReviewTimeout,
-				Env: []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}}
+				Env: j.reviewerEnv(reviewer.command, reviewer.structured)}
 			out, runErr := j.run(ctx, spec)
 			if runErr != nil {
 				used := reviewer.used
@@ -221,6 +231,7 @@ func (j crossReviewJob) execute(ctx context.Context) crossReviewRecord {
 				if retry {
 					if spec.Args[3], runErr = config.GenerateReviewerCommand(next.String()); runErr == nil {
 						runx.LoggerFrom(ctx).Info("cross review model unavailable; retrying with next candidate", "ticket", j.ticketID, "reviewer", reviewer.name, "unavailable", reviewer.used.String(), "selected", next.String())
+						spec.Env = j.reviewerEnv(spec.Args[3], reviewer.structured)
 						if out, runErr = j.run(ctx, spec); runErr != nil {
 							if _, _, modelErr = config.RetryAfterModelError(j.stateRoot, next, nil, out, runErr, j.now()); modelErr != nil {
 								runx.LoggerFrom(ctx).Warn("cross review model error not recorded", "ticket", j.ticketID, "reviewer", reviewer.name, "err", modelErr)
@@ -406,6 +417,14 @@ func (r *Runtime) startCrossReview(ctx context.Context, t Ticket) error {
 	if err != nil || decision.Action != "escalate" || !crossReviewClasses[decision.Class] {
 		return nil
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	relayEnv, err := config.ModelRelay(home)
+	if err != nil {
+		return err
+	}
 	repository := r.Repositories[t.Repo]
 	env := repository.Env
 	commands, err := config.ResolveReviewerCommands(env, repository.Sources)
@@ -449,7 +468,7 @@ func (r *Runtime) startCrossReview(ctx context.Context, t Ticket) error {
 		scope: declaredScope(description), forbiddenGlobs: forbidden,
 		reviewers: [2]crossReviewer{reviewer, secondReviewer}, stateRoot: r.StateRoot,
 		brief: description + "\n\n## 处置说明\n" + decision.Reason + "\n" + decision.Body,
-		run:   run, now: now,
+		run:   run, now: now, relayEnv: relayEnv,
 	})
 	return nil
 }
@@ -468,7 +487,8 @@ func (r *Runtime) crossReviewCommand(ctx context.Context, repository config.Repo
 	if len(candidates) > 0 && used != candidates[0] {
 		runx.LoggerFrom(ctx).Info("cross review model falls back", "key", structuredKey, "configured", candidates[0].String(), "selected", used.String())
 	}
-	return crossReviewer{name: name, command: selected, used: used, candidates: candidates}, nil
+	structured := config.ReviewerKey(repository.Env, repository.Sources, structuredKey, commandKey) == structuredKey
+	return crossReviewer{name: name, command: selected, used: used, candidates: candidates, structured: structured}, nil
 }
 
 // readCrossReviews records which resolver dispatches already have a record.

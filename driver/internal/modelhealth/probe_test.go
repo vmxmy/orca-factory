@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -103,5 +104,60 @@ func TestProbeEndpoint(t *testing.T) {
 				t.Errorf("Claude received %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestModelRelayProbe(t *testing.T) {
+	for _, agent := range []string{"claude", "codex"} {
+		t.Run(agent+"/inherited", func(t *testing.T) {
+			const token = "fake-inherited-probe-sentinel"
+			t.Setenv("AGENT_MODEL_PROXY_TOKEN", token)
+			t.Setenv("PROBE_INHERITED", "present")
+			dir := t.TempDir()
+			binary := filepath.Join(dir, "agent")
+			script := "#!/bin/sh\n" +
+				"test -z \"${AGENT_MODEL_PROXY_TOKEN+x}\" || exit 1\n" +
+				"env | grep -Fq '" + token + "' && exit 1\n" +
+				"test \"$PROBE_INHERITED\" = present && printf ok\n"
+			if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			got := modelhealth.Probe(context.Background(), modelhealth.Ref{Agent: agent}, dir, modelhealth.Endpoint{Binary: binary})
+			if got.State != modelhealth.OK {
+				t.Errorf("non-isolated probe inherited the wrong environment: %s", got.State)
+			}
+		})
+		for _, token := range []string{"", "fake-relay-token"} {
+			t.Run(agent+"/"+token, func(t *testing.T) {
+				dir := t.TempDir()
+				binary := filepath.Join(dir, "agent")
+				if err := os.WriteFile(binary, []byte("#!/bin/sh\n/bin/cat /proc/$$/environ > env\nprintf ok\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("UNRELATED_SECRET", "must-not-reach-probe")
+				endpoint := modelhealth.Endpoint{Binary: binary, BaseURL: "https://relay.invalid", AuthToken: token, Isolated: true}
+				got := modelhealth.Probe(context.Background(), modelhealth.Ref{Agent: agent}, dir, endpoint)
+				if got.State != modelhealth.OK {
+					t.Fatalf("probe state = %s", got.State)
+				}
+				raw, err := os.ReadFile(filepath.Join(dir, "env"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				env := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+				want := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+				if agent == "claude" {
+					want = append(want, "ANTHROPIC_BASE_URL=https://relay.invalid")
+					if token != "" {
+						want = append(want, "ANTHROPIC_AUTH_TOKEN="+token)
+					}
+				}
+				slices.Sort(env)
+				slices.Sort(want)
+				if !slices.Equal(env, want) {
+					t.Fatal("unexpected probe environment")
+				}
+			})
+		}
 	}
 }

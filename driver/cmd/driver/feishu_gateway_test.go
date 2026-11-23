@@ -683,3 +683,44 @@ func TestAuditSummaryIsSingleLine(t *testing.T) {
 		t.Fatalf("summary=%q, want the request on one line", summary)
 	}
 }
+
+func TestModelRelayGateway(t *testing.T) {
+	const token = "fake-gateway-relay-sentinel"
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENT_MODEL_PROXY_URL", "")
+	t.Setenv("AGENT_MODEL_PROXY_TOKEN", "")
+	file := filepath.Join(home, ".config/orca-factory/driver.env")
+	writeDoctorFile(t, file, "AGENT_MODEL_PROXY_URL=https://relay.invalid\nAGENT_MODEL_PROXY_TOKEN="+token+"\n", 0600)
+	t.Setenv("AGENT_INTAKE_CLAUDE", "/bin/true")
+	runtime, err := newGatewayRuntime(home, "/bin/true", t.TempDir(), config.Tuning{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.stop()
+	for _, prefix := range []string{"ONE", "TWO"} {
+		p := projects.Project{Prefix: prefix, Path: "/repo/" + prefix, Repository: config.Repository{Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "test/" + prefix, "AGENT_ROLE_INTAKE": "claude:m:high"}}}
+		if _, err := runtime.resolve(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+		runner := runtime.built[prefix]
+		if runner.ModelURL != "https://relay.invalid" || runner.ModelToken != token {
+			t.Fatal("runner missing relay config")
+		}
+	}
+	for _, key := range gatewayKeys {
+		if !slices.Contains(optionalGatewayKeys, key) {
+			t.Setenv(key, "test-placeholder")
+		}
+	}
+	for _, url := range []string{"", "ftp://" + token} {
+		writeDoctorFile(t, file, "AGENT_MODEL_PROXY_URL="+url+"\nAGENT_MODEL_PROXY_TOKEN="+token+"\n", 0600)
+		err := runFeishuGateway(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "AGENT_MODEL_PROXY") {
+			t.Fatal("gateway did not reject relay config at startup")
+		}
+		if strings.Contains(err.Error(), token) {
+			t.Fatal("credential leaked by gateway")
+		}
+	}
+}

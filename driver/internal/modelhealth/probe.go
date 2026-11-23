@@ -13,11 +13,12 @@ import (
 
 // Endpoint is how a role reaches its model. Binary replaces the agent name
 // looked up on PATH, BaseURL overrides Claude's inherited endpoint, and an
-// Isolated role sees only HOME and PATH, as the intake and cross-review runs do.
+// Isolated role sees HOME and PATH plus explicit Claude relay settings.
 type Endpoint struct {
-	Binary   string
-	BaseURL  string
-	Isolated bool
+	Binary    string
+	BaseURL   string
+	AuthToken string
+	Isolated  bool
 }
 
 // Probe sends one bounded, read-only request through endpoint.
@@ -46,7 +47,7 @@ func Probe(ctx context.Context, ref Ref, dir string, endpoint Endpoint) Status {
 		for _, value := range os.Environ() {
 			key, _, _ := strings.Cut(value, "=")
 			switch key {
-			case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN":
+			case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN", "AGENT_MODEL_PROXY_TOKEN":
 				continue
 			}
 			env = append(env, value)
@@ -54,6 +55,9 @@ func Probe(ctx context.Context, ref Ref, dir string, endpoint Endpoint) Status {
 	}
 	if ref.Agent == "claude" && endpoint.BaseURL != "" {
 		env = append(env, "ANTHROPIC_BASE_URL="+endpoint.BaseURL)
+	}
+	if ref.Agent == "claude" && endpoint.AuthToken != "" {
+		env = append(env, "ANTHROPIC_AUTH_TOKEN="+endpoint.AuthToken)
 	}
 	binary := endpoint.Binary
 	if binary == "" {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -453,4 +454,103 @@ func TestCrossReviewRetriesNextModelAndRecordsEachFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestModelRelayCrossReview(t *testing.T) {
+	f := newCrossReviewFixture(t, "scope-extension", "src/fix.go")
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude := modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2", Effort: "high"}
+	codex := modelhealth.Ref{Agent: "codex", Model: "gpt-6", Effort: "high"}
+	shellModel := modelhealth.Ref{Agent: "claude", Model: "m;env", Effort: "high"}
+	defaultModel, err := config.GenerateReviewerCommand("claude::high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name        string
+		first, next modelhealth.Ref
+		legacy      string
+		relay       bool
+		wantRelay   []bool
+	}{
+		{name: "claude", first: claude, relay: true, wantRelay: []bool{true}},
+		{name: "codex", first: codex, relay: true, wantRelay: []bool{false}},
+		{name: "legacy", legacy: "custom-review", relay: true, wantRelay: []bool{false}},
+		{name: "unconfigured", first: claude, wantRelay: []bool{false}},
+		{name: "default model", first: modelhealth.Ref{Agent: "claude", Effort: "high"}, relay: true, wantRelay: []bool{true}},
+		{name: "legacy Claude command without model", legacy: "claude -p --effort high", relay: true, wantRelay: []bool{false}},
+		{name: "legacy command equal to default model", legacy: defaultModel, relay: true, wantRelay: []bool{false}},
+		{name: "shell model", first: shellModel, relay: true, wantRelay: []bool{false}},
+		{name: "shell effort", first: modelhealth.Ref{Agent: "claude", Model: "m", Effort: "high*"}, relay: true, wantRelay: []bool{false}},
+		{name: "fallback to codex", first: claude, next: codex, relay: true, wantRelay: []bool{true, false}},
+		{name: "fallback to claude", first: codex, next: claude, relay: true, wantRelay: []bool{false, true}},
+		{name: "fallback to shell model", first: claude, next: shellModel, relay: true, wantRelay: []bool{true, false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := tc.legacy
+			if command == "" {
+				var err error
+				command, err = config.GenerateReviewerCommand(tc.first.String())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			reviewer := crossReviewer{name: "reviewer", command: command, used: tc.first, structured: tc.legacy == ""}
+			if tc.next.Agent != "" {
+				reviewer.candidates = []modelhealth.Ref{tc.first, tc.next}
+			}
+			var captured []runx.Spec
+			run := func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if s.Path != "/bin/sh" {
+					return runx.Run(ctx, s)
+				}
+				green := []byte(`{"step":"cross-review","verdict":"green","expands_authority":false,"reason":"ok"}`)
+				if s.Args[3] == "true" {
+					return green, nil
+				}
+				captured = append(captured, s)
+				if tc.next.Agent != "" && len(captured) == 1 {
+					return limit, errors.New("exit status 1")
+				}
+				return green, nil
+			}
+			job := crossReviewJob{ticketID: "id", repo: f.repo.Path, head: f.head, scope: []string{"src/*"}, reviewers: [2]crossReviewer{reviewer, {name: "second", command: "true"}}, stateRoot: t.TempDir(), run: run, now: time.Now}
+			if tc.relay {
+				job.relayEnv = map[string]string{"ANTHROPIC_BASE_URL": "https://relay.invalid", "ANTHROPIC_AUTH_TOKEN": "fake-token"}
+			}
+			record := job.execute(context.Background())
+			count := len(tc.wantRelay)
+			if len(captured) != count {
+				t.Fatalf("calls=%d, want=%d, record=%+v", len(captured), count, record)
+			}
+			for i, s := range captured {
+				want := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+				if tc.wantRelay[i] {
+					want = append(want, "ANTHROPIC_BASE_URL=https://relay.invalid", "ANTHROPIC_AUTH_TOKEN=fake-token")
+				}
+				if !slices.Equal(s.Env, want) {
+					t.Fatalf("call %d environment mismatch", i)
+				}
+			}
+		})
+	}
+	t.Run("invalid config does not start", func(t *testing.T) {
+		t.Setenv("AGENT_MODEL_PROXY_URL", "")
+		t.Setenv("AGENT_MODEL_PROXY_TOKEN", "fake-scheduler-token")
+		raw, _ := json.Marshal(map[string]string{"action": "escalate", "class": "scope-extension", "head": f.head, "reason": "scope", "body": "scope"})
+		ticket := Ticket{ID: "id", Repo: f.repo.Path, Owner: machine.OwnerHuman, Resolution: &resolver.Record{Phase: "human", Dispatch: "ctx_invalid", Result: string(raw)}}
+		err := f.runtime.startCrossReview(context.Background(), ticket)
+		if err == nil {
+			t.Fatal("invalid relay configuration accepted")
+		}
+		if strings.Contains(err.Error(), "fake-scheduler-token") {
+			t.Fatal("credential in error")
+		}
+		if f.runtime.reviews != nil {
+			t.Fatal("cross review started with invalid relay")
+		}
+	})
 }

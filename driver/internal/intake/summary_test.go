@@ -83,7 +83,7 @@ func TestIntakeRollingSummary(t *testing.T) {
 		return []string{"-p", "--output-format", "json", flag, id, "--model", "claude-opus-5-5", "--effort", "high",
 			"--append-system-prompt-file", checkout + "/scripts/agent-gates/roles/intake-chat.md",
 			"--tools", "Read,Grep,Glob,Skill", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config",
-			"--settings", `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.config/**)","Read(~/.local/state/**)","Read(~/.ssh/**)"]}}`}
+			"--settings", `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.config/**)","Read(~/.local/state/**)","Read(~/.ssh/**)","Read(/proc/**)"]}}`}
 	}
 	wantEnv := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
 	pong := "pong\n\nROLE-LOADED"
