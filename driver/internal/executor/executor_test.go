@@ -64,13 +64,19 @@ func (f *fakeOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Re
 // fakeIssues serves the fixture ticket issue_one/ZII-861 as a managed open record.
 type fakeIssues struct {
 	issues.Store
-	comments []string
-	updates  []string
+	comments   []string
+	updates    []string
+	repository string
 	// commentsAtUpdate is len(comments) when each UpdateIssue ran.
 	commentsAtUpdate []int
 }
 
-func (f *fakeIssues) Repository() string { return "acme/demo" }
+func (f *fakeIssues) Repository() string {
+	if f.repository != "" {
+		return f.repository
+	}
+	return "acme/demo"
+}
 func (f *fakeIssues) Read(_ context.Context, id string) (issues.Task, error) {
 	issue := task.Issue{ID: id, Identifier: "ZII-861"}
 	return issues.Task{Issue: issue, URL: "https://github.com/acme/demo/issues/1", Complete: true, NativeState: "open", Metadata: issues.Metadata{Complete: true}}, nil
