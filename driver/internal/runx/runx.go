@@ -68,6 +68,9 @@ func Run(ctx context.Context, spec Spec) (output []byte, err error) {
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
+	if filepath.Base(spec.Path) == "git" {
+		cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+	}
 	cmd.Stderr = &captured
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
