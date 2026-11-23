@@ -1791,10 +1791,13 @@ func TestModelRelayDoctor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tier := range []string{"claude::high", "claude:m;env:high"} {
-		t.Run(tier, func(t *testing.T) {
-			project.Repository.Env["AGENT_ROLE_REVIEWER"] = tier
-			project.Repository.Env["AGENT_ROLE_SECOND_REVIEWER"] = tier
+	for _, tc := range []struct{ tier, wantURL, wantToken string }{
+		{tier: "claude::high", wantURL: "https://relay.invalid", wantToken: token},
+		{tier: "claude:m;env:high"},
+	} {
+		t.Run(tc.tier, func(t *testing.T) {
+			project.Repository.Env["AGENT_ROLE_REVIEWER"] = tc.tier
+			project.Repository.Env["AGENT_ROLE_SECOND_REVIEWER"] = tc.tier
 			roles := p.modelSettings().modelRoles(project)
 			for _, name := range []string{"second_reviewer", "cross_reviewer"} {
 				i := slices.IndexFunc(roles, func(r doctorModelRole) bool { return r.name == name })
@@ -1802,8 +1805,8 @@ func TestModelRelayDoctor(t *testing.T) {
 					t.Fatalf("missing %s", name)
 				}
 				endpoint := roles[i].endpoint
-				if !endpoint.Isolated || endpoint.BaseURL != "" || endpoint.AuthToken != "" {
-					t.Errorf("%s should probe with local login", name)
+				if !endpoint.Isolated || endpoint.BaseURL != tc.wantURL || endpoint.AuthToken != tc.wantToken {
+					t.Errorf("unexpected relay endpoint for %s", name)
 				}
 			}
 		})

@@ -404,7 +404,14 @@ var relayShellLiteral = regexp.MustCompile(`^[A-Za-z0-9._/@+-]*$`)
 // RelayReviewer reports whether the generated Claude command can receive relay credentials.
 func RelayReviewer(command string) bool {
 	ref, ok := ReviewerRef(command)
-	return ok && ref.Agent == "claude" && relayShellLiteral.MatchString(ref.Model) && relayShellLiteral.MatchString(ref.Effort)
+	if ref.Agent != "claude" {
+		return false
+	}
+	if !ok && ref.Model == "" {
+		generated, err := GenerateReviewerCommand(ref.String())
+		ok = err == nil && generated == command
+	}
+	return ok && relayShellLiteral.MatchString(ref.Model) && relayShellLiteral.MatchString(ref.Effort)
 }
 
 var assignment = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
