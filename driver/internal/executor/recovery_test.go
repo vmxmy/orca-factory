@@ -186,6 +186,85 @@ func TestCorrectionLoop(t *testing.T) {
 		})
 	}
 }
+
+type fallbackRecovery struct {
+	recoveryService
+	correction func(context.Context, CorrectionRequest) error
+	specs      []string
+}
+
+func (r *fallbackRecovery) Correction(ctx context.Context, req CorrectionRequest) error {
+	r.sessions++
+	r.requests = append(r.requests, req)
+	return r.correction(ctx, req)
+}
+
+func (r *fallbackRecovery) ChildTask(_ context.Context, _, _, spec, _ string) (string, error) {
+	r.specs = append(r.specs, spec)
+	return "child_task", nil
+}
+
+func TestCorrectionSessionFallback(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		content    string
+		write      bool
+		err        error
+		correction int
+		want       string
+		stalled    bool
+	}{
+		{"timeout", "", false, context.DeadlineExceeded, 1, "执行器代写：correction 会话未写出修复步骤（超时）", false},
+		{"written before exit error", "步骤 1：修复断言", true, errors.New("exit status 1"), 1, "步骤 1：修复断言", false},
+		{"empty file", "", true, nil, 1, "执行器代写：correction 会话未写出修复步骤（文件为空）", false},
+		{"second correction stalled", "STALLED: 重复失败", true, errors.New("exit status 1"), 2, "", true},
+		{"third correction stalled", "STALLED: 重复失败", true, errors.New("exit status 1"), 3, "", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e, o, tools, _, issues, ticket := recoveryFixture(t)
+			tools.gateReds = tt.correction
+			s := &fallbackRecovery{correction: func(_ context.Context, req CorrectionRequest) error {
+				if req.Number < tt.correction {
+					return os.WriteFile(req.Path, []byte("Repair the failing assertion"), 0600)
+				}
+				if tt.write {
+					if err := os.WriteFile(req.Path, []byte(tt.content), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return tt.err
+			}}
+			e.Recovery = s
+			var sleeps []time.Duration
+			e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
+			result, err := e.Execute(context.Background(), ticket)
+			if err != nil || result.State.Infra != 0 || len(sleeps) != 0 || s.sessions != tt.correction {
+				t.Fatalf("result=%+v err=%v sleeps=%v sessions=%d", result, err, sleeps, s.sessions)
+			}
+			if tt.stalled {
+				if result.State.Owner != machine.OwnerResolver || result.StallReason != "重复失败" || len(o.starts) != tt.correction || len(s.specs) != tt.correction-1 {
+					t.Fatalf("result=%+v starts=%d specs=%v", result, len(o.starts), s.specs)
+				}
+				assertBudgetHandoff(t, issues)
+				return
+			}
+			if result.State.Owner != machine.OwnerMerge || len(o.starts) != 2 || len(s.specs) != 1 {
+				t.Fatalf("result=%+v starts=%d specs=%v", result, len(o.starts), s.specs)
+			}
+			spec := s.specs[0]
+			if !strings.Contains(spec, tt.want) {
+				t.Fatalf("spec=%q, want %q", spec, tt.want)
+			}
+			if tt.content != "" && strings.Contains(spec, "执行器代写") {
+				t.Fatalf("written steps replaced with fallback: %q", spec)
+			}
+			if tt.content == "" && !strings.Contains(spec, s.requests[0].Cause) {
+				t.Fatalf("spec=%q, missing cause %q", spec, s.requests[0].Cause)
+			}
+		})
+	}
+}
+
 func TestCorrectionTierAndCap(t *testing.T) {
 	for _, escalate := range []string{"0", "1"} {
 		t.Run(escalate, func(t *testing.T) {
