@@ -2,10 +2,13 @@ package executor
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -319,6 +322,60 @@ func TestGitHubPRReferencesIssueURLAndCanonicalIdentity(t *testing.T) {
 			body := pr.created[0].Body
 			if !strings.HasPrefix(body, "关联票: https://github.example/acme/demo/issues/42\n") || !strings.Contains(body, "Canonical identifier: "+identifier+"\n") || !strings.Contains(body, "Canonical ID: 01234567-1234-1234-1234-012345678901\n") || pr.created[0].Head != "agent/"+identifier+"/executor" {
 				t.Fatalf("missing URL or changed canonical identity: %+v", pr.created[0])
+			}
+		})
+	}
+}
+
+type followUpReviewTools struct {
+	*fakeTools
+	output string
+}
+
+func (f *followUpReviewTools) Review(context.Context, string, string, string, *float64) (string, string, error) {
+	return f.output, "default", nil
+}
+
+func TestPullRequestBodyReviewFollowUps(t *testing.T) {
+	green, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", "reviewer-output-green-followups.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(green)); got != "19b91b4ce02d1cbe17f4c7fe486daf93bdcf5a0833a29ea7ee264815f29e5923" {
+		t.Fatalf("recorded green SHA256 = %s", got)
+	}
+	red, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", "reviewer-output-fenced.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prefix = "关联票: https://github.com/acme/demo/issues/1\n\nCanonical identifier: ZII-861\nCanonical ID: issue_one\n\n实现主路径"
+	const suffix = "\n\n## 审查后续建议\ndriver/README.md:727 的「上一段」应为「下一段」。第 729 行的人工恢复步骤适用于确认仍属模型搁置的票；若最新原因是 lane 3，应保留人工屏障。"
+	for _, tc := range []struct {
+		name, output, suffix string
+		createPR             bool
+	}{
+		{"green follow-ups", string(green), suffix, true},
+		{"green without follow-ups", `{"verdict":"green","step":"review","reason":"通过"}`, "", true},
+		{"empty output", "", "", false},
+		{"recorded red", string(red), "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _, _, pr, tools, ticket := fixture(t, "new-sha")
+			body, err := e.pullRequestBody(context.Background(), ticket, reviewFollowUps(tc.output))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body != prefix+tc.suffix {
+				t.Errorf("body = %q; want %q", body, prefix+tc.suffix)
+			}
+			if tc.createPR {
+				e.Tools = &followUpReviewTools{fakeTools: tools, output: tc.output}
+				if _, err := e.Execute(context.Background(), ticket); err != nil {
+					t.Fatal(err)
+				}
+				if len(pr.created) != 1 || pr.created[0].Body != prefix+tc.suffix {
+					t.Fatalf("created PR = %+v; want body %q", pr.created, prefix+tc.suffix)
+				}
 			}
 		})
 	}

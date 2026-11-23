@@ -151,7 +151,7 @@ func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
 	return nil
 }
 
-func (e *Executor) pullRequestBody(ctx context.Context, t Ticket) (string, error) {
+func (e *Executor) pullRequestBody(ctx context.Context, t Ticket, followUps string) (string, error) {
 	if err := e.freshExecution(ctx, t); err != nil {
 		return "", err
 	}
@@ -162,5 +162,9 @@ func (e *Executor) pullRequestBody(ctx context.Context, t Ticket) (string, error
 	if task.URL == "" || task.ID != t.ID || task.Identifier != t.Identifier {
 		return "", errors.New("GitHub issue reference unavailable")
 	}
-	return fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\n%s", task.URL, t.Identifier, t.ID, t.Todo), nil
+	body := fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\n%s", task.URL, t.Identifier, t.ID, t.Todo)
+	if followUps != "" {
+		body += "\n\n## 审查后续建议\n" + followUps
+	}
+	return body, nil
 }
