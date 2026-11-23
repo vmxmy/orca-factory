@@ -213,6 +213,18 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	if restored != nil {
 		cp = *restored
 	}
+	if restored == nil {
+		fallback, fallbackErr := config.ParseFallback(c.TierSettings[config.FallbackKey("AGENT_TIER_"+strings.ToUpper(cmp.Or(c.Tier, "default")))])
+		registry, registryErr := modelhealth.Open(c.Root)
+		if fallbackErr == nil && registryErr == nil {
+			candidates := append([]modelhealth.Ref{{Agent: c.Agent, Model: c.Model, Effort: c.Effort}}, fallback...)
+			if reason := modelParkReason(registry, candidates, e.Now()); reason != "" {
+				return result, e.parkModel(ctx, t, &result, cp, reason)
+			}
+		} else {
+			e.logger().Warn("first dispatch model check unavailable", "error", logErrorSummary(errors.Join(fallbackErr, registryErr)))
+		}
+	}
 	// Transition authorization always precedes the I/O belonging to the next phase.
 	transition := func(ev machine.Event, action func([]machine.Effect) error) error {
 		previous := result.State
@@ -300,6 +312,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		return nil
 	}
 
+	var parkReason string
 	err = transition(machine.EvClaim, func(fx []machine.Effect) error {
 		if !hasEffect(fx, "worker-start-with-request-id") {
 			return errors.New("claim lacks worker effect")
@@ -392,13 +405,21 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return err
 		}
 		e.logger().Info("worker skills", "worker_skills", strings.Join(c.WorkerSkills, ","), "correction", cp.Corrections)
-		first := e.tierModel(cmp.Or(c.Tier, "default"), modelhealth.Ref{Agent: c.Agent, Model: c.Model, Effort: c.Effort})
+		var first modelhealth.Ref
+		first, parkReason = e.firstDispatchModel(cmp.Or(c.Tier, "default"), modelhealth.Ref{Agent: c.Agent, Model: c.Model, Effort: c.Effort})
+		if parkReason != "" {
+			return errFirstDispatchCooling
+		}
 		if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Spec: workerSpec, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: first.Agent, Model: first.Model, Effort: first.Effort}); err != nil {
 			return err
 		}
 		taskID, result.DispatchID = cp.Task, cp.Dispatch
 		return nil
 	})
+	if errors.Is(err, errFirstDispatchCooling) {
+		err = e.parkModel(ctx, t, &result, cp, parkReason)
+		return result, err
+	}
 	if err != nil {
 		return result, err
 	}
@@ -1053,11 +1074,19 @@ func (e *Executor) modelReport(ctx context.Context, c Config, cp checkpoint, dis
 	if next, ok := registry.Select(candidates, now); ok {
 		return &orca.WorkerReport{Provenance: provenanceExecutorModel, Outcome: "failed", Body: fmt.Sprintf("model unavailable: %s; dispatch %s ended; next candidate %s", used, dispatch, next)}
 	}
+	return &orca.WorkerReport{Provenance: provenanceExecutorModelParked, Outcome: "failed", Body: modelParkReason(registry, candidates, now)}
+}
+
+func modelParkReason(registry *modelhealth.Registry, candidates []modelhealth.Ref, now time.Time) string {
 	statuses := make([]modelhealth.Status, 0, len(candidates))
 	for _, ref := range candidates {
-		statuses = append(statuses, registry.Status(ref, now))
+		status := registry.Status(ref, now)
+		if status.State != modelhealth.Unavailable {
+			return ""
+		}
+		statuses = append(statuses, status)
 	}
-	return &orca.WorkerReport{Provenance: provenanceExecutorModelParked, Outcome: "failed", Body: config.ModelParkReason(statuses)}
+	return config.ModelParkReason(statuses)
 }
 
 // modelRedo is e whose correction step writes a fixed redo note instead of
@@ -1082,9 +1111,8 @@ func (r modelRedoRecovery) Correction(_ context.Context, req CorrectionRequest) 
 	return os.WriteFile(req.Path, []byte(r.note), 0o600)
 }
 
-// parkModel parks a ticket whose stopped worker found every candidate of its
-// tier unavailable, as the scheduler parks: labels first, then the 搁置 line
-// that ResumeModelParks reads back once a candidate recovers.
+// parkModel records the model reason before releasing the ticket's ownership,
+// so ResumeModelParks can read the candidates once one recovers.
 func (e *Executor) parkModel(ctx context.Context, t Ticket, result *Result, cp checkpoint, reason string) error {
 	status.Push(e.Now(), func(view *status.View) {
 		status.SetTicket(view, status.Ticket{Repo: e.Config.Repo, Identifier: t.Identifier}, false)
@@ -1100,7 +1128,11 @@ func (e *Executor) parkModel(ctx context.Context, t Ticket, result *Result, cp c
 		return errors.New("model park labels failed")
 	}
 	result.State.Phase, result.State.Owner, result.State.HumanReason, result.State.ExecAlive = machine.PhaseUnclaimed, machine.OwnerNone, reason, false
-	body := fmt.Sprintf("搁置：%s\n已完成：worker 派工 %s 已停止，分支保留\n阶段: %s\n归属: %s", reason, result.DispatchID, machine.PhaseUnclaimed, machine.OwnerNone)
+	completed := fmt.Sprintf("worker 派工 %s 已停止，分支保留", result.DispatchID)
+	if result.DispatchID == "" {
+		completed = "首轮派工前当前档候选均在冷却，未派工"
+	}
+	body := fmt.Sprintf("搁置：%s\n已完成：%s\n阶段: %s\n归属: %s", reason, completed, machine.PhaseUnclaimed, machine.OwnerNone)
 	if err := e.comment(ctx, t.ID, body); err != nil {
 		return errors.New("model park comment failed")
 	}
@@ -1110,6 +1142,8 @@ func (e *Executor) parkModel(ctx context.Context, t Ticket, result *Result, cp c
 
 // errModelStopped ends a wait whose worker stopModelUnavailable stopped.
 var errModelStopped = errors.New("worker stopped for an unavailable model")
+
+var errFirstDispatchCooling = errors.New("all first-dispatch models are cooling")
 
 func livenessFailure(reason string) *orca.WorkerReport {
 	return &orca.WorkerReport{Provenance: provenanceExecutorLiveness, Outcome: "failed", Body: reason}
