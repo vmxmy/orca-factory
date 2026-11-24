@@ -164,7 +164,7 @@ func (r *Runtime) verifyFreshLaunch(ctx context.Context, t Ticket) error {
 	if err != nil {
 		return err
 	}
-	if fresh.MergeProblem != t.MergeProblem || !reflect.DeepEqual(fresh.Handoff, t.Handoff) || !reflect.DeepEqual(fresh.Progress, t.Progress) || !reflect.DeepEqual(fresh.Resolution, t.Resolution) {
+	if fresh.MergeProblem != t.MergeProblem || !reflect.DeepEqual(fresh.Handoff, t.Handoff) || !reflect.DeepEqual(fresh.Resolution, t.Resolution) {
 		return errLaunchEvidenceChanged
 	}
 	expected := machine.OwnerExecutor
