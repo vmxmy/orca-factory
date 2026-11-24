@@ -29,7 +29,7 @@ func GenerateReviewerCommand(value string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unsupported reviewer agent %q", ref.Agent)
 	}
-	return profile.ReviewerCommand(ref.Agent, ref.Model, ref.Effort), nil
+	return profile.ReviewerCommand(ref.Model, ref.Effort), nil
 }
 
 // ReviewerKey picks the key that configures one reviewer role: an explicit

@@ -84,6 +84,7 @@ type healthCheck struct {
 // healthReport mirrors `orca-factory doctor --json`: a top-level object keyed
 // by name plus an errors string array. OF-128 consumes this shape.
 type healthReport struct {
+	Agents []string               `json:"agents,omitempty"`
 	Checks map[string]healthCheck `json:"checks"`
 	Errors []string               `json:"errors"`
 }
@@ -236,7 +237,7 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		checks["ledger"] = p.checkLedger(ctx, eligible)
 		checks["models"] = p.checkModels(ctx, eligible, discovered.Rejected)
 	}
-	report := healthReport{Checks: checks, Errors: []string{}}
+	report := healthReport{Agents: agentcli.List(), Checks: checks, Errors: []string{}}
 	for _, name := range doctorChecks {
 		if checks[name].unprobed {
 			report.Errors = append(report.Errors, name+": "+checks[name].Reason)
@@ -250,6 +251,9 @@ func writeHealth(out io.Writer, report healthReport, asJSON bool, names []string
 		return json.NewEncoder(out).Encode(report)
 	}
 	var b strings.Builder
+	if len(report.Agents) > 0 {
+		fmt.Fprintln(&b, "Agents", strings.Join(report.Agents, ", "))
+	}
 	fmt.Fprintf(&b, "%-13s %-8s %s\n", "CHECK", "STATUS", "REASON")
 	for _, name := range names {
 		check := report.Checks[name]

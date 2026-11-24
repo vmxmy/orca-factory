@@ -104,7 +104,7 @@ func Load(home string) (Config, error) {
 		}
 		result.FactoryRoot = filepath.Clean(root)
 	}
-	agentcli.Register(raw.Agents)
+	agentcli.Configure(raw.Agents)
 	if _, err := loadProfiles(home); err != nil {
 		return Config{}, err
 	}

@@ -104,21 +104,26 @@ func ReviewerRef(command string) (modelhealth.Ref, bool) {
 }
 
 func matchReviewer(command string) (modelhealth.Ref, agentcli.Profile) {
+	var found modelhealth.Ref
+	var matched agentcli.Profile
 	for _, agent := range agentcli.List() {
 		profile, ok := agentcli.Lookup(agent)
 		if !ok {
 			continue
 		}
-		model, effort, ok := profile.MatchReviewerCommand(agent, command)
+		model, effort, ok := profile.MatchReviewerCommand(command)
 		if !ok {
 			continue
 		}
 		ref, err := modelhealth.Parse(agent + ":" + model + ":" + effort)
 		if err == nil {
-			return ref, profile
+			if found.Agent != "" {
+				return modelhealth.Ref{}, agentcli.Profile{}
+			}
+			found, matched = ref, profile
 		}
 	}
-	return modelhealth.Ref{}, agentcli.Profile{}
+	return found, matched
 }
 
 // ModelParked prefixes the 搁置 reason of a ticket parked because every model

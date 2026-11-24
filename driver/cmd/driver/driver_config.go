@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -39,6 +40,7 @@ const (
 
 // configSnapshot is driver-config-v1 (driver/CONTRACTS.md「driver config 快照」).
 type configSnapshot struct {
+	Agents      []string       `json:"agents"`
 	Schema      string         `json:"schema"`
 	GeneratedAt time.Time      `json:"generatedAt"`
 	Overview    configOverview `json:"overview"`
@@ -192,6 +194,7 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 		s.Problems = append(s.Problems, "driver 配置无法加载（"+err.Error()+"），调度项与仓库未列出")
 		return s
 	}
+	s.Agents = agentcli.List()
 	s.Overview.FactoryRoot = cfg.FactoryRoot
 	s.Scheduler = schedulerEntries(home, cfg, &s.Problems)
 	result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})

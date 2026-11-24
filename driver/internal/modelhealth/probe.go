@@ -28,7 +28,7 @@ func Probe(ctx context.Context, ref Ref, dir string, endpoint Endpoint) Status {
 	if !ok {
 		return Status{Ref: ref, State: Unknown, Reason: "unsupported_agent", CheckedAt: time.Now()}
 	}
-	args := profile.ProbeArgv(ref.Model, "Reply with exactly: ok")
+	args := profile.ProbeArgv(ref.Model, ref.Effort, "Reply with exactly: ok")
 	env := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
 	if !endpoint.Isolated {
 		env = env[:0]
@@ -49,7 +49,7 @@ func Probe(ctx context.Context, ref Ref, dir string, endpoint Endpoint) Status {
 	}
 	binary := endpoint.Binary
 	if binary == "" {
-		binary = ref.Agent
+		binary = profile.Executable()
 	}
 	output, err := runx.Run(ctx, runx.Spec{Path: binary, Args: args, Dir: dir, Env: env, Timeout: ProbeTimeout})
 	var exit *exec.ExitError

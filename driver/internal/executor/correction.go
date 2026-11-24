@@ -88,9 +88,9 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 	if !ok {
 		return errors.New("correction agent must be claude or codex")
 	}
-	spec := runx.Spec{Path: ref.Agent, Args: profile.CorrectionArgv(ref.Model, ref.Effort, prompt, filepath.Dir(req.Path)),
+	spec := runx.Spec{Path: profile.Executable(), Args: profile.CorrectionArgv(ref.Model, ref.Effort, prompt, filepath.Dir(req.Path)),
 		Dir: req.Repo, Env: env, Timeout: 10 * time.Minute}
-	if profile.CorrectionStdin {
+	if profile.CorrectionStdin() {
 		dir, err := os.MkdirTemp("", "correction-input-*")
 		if err != nil {
 			return err
@@ -105,7 +105,7 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 			return err
 		}
 		spec.Path = "/bin/sh"
-		spec.Args = append([]string{"-c", `exec "$@" < "$0"`, input, ref.Agent}, spec.Args...)
+		spec.Args = append([]string{"-c", `exec "$@" < "$0"`, input, profile.Executable()}, spec.Args...)
 	}
 	output, err := c.runSpec(ctx, spec)
 	if err == nil {

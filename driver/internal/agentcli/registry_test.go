@@ -20,12 +20,17 @@ import (
 )
 
 func TestAgentCliRegistryLookupAgy(t *testing.T) {
+	t.Cleanup(func() { agentcli.Configure(nil) })
 	want := agentcli.Profile{
-		ModelFlag: "--model", EffortFlag: "--effort", PromptFlag: "--print",
-		ReviewerArgs: "--mode plan", ProbeArgs: []string{"--mode", "plan"},
+		Name: "agy", Binary: "agy",
+		ReviewArgs: []string{"--mode", "plan"}, ProbeArgs: []string{"--mode", "plan"},
 		CorrectionArgs: []string{"--mode", "accept-edits", "--add-dir", "{dir}"},
 	}
-	agentcli.Register(map[string]agentcli.Profile{"agy": want})
+	agentcli.Register(agentcli.Profile{Name: "first"})
+	agentcli.Register(want)
+	if !agentcli.Registered("first") {
+		t.Fatal("Register removed another profile")
+	}
 	got, ok := agentcli.Lookup("agy")
 	if !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Lookup(agy) = %+v, %t; want %+v", got, ok, want)
@@ -54,7 +59,7 @@ func TestAgentCliBuiltins(t *testing.T) {
 			if err != nil || command != tc.reviewer {
 				t.Fatalf("reviewer = %q, %v; want %q", command, err, tc.reviewer)
 			}
-			if args := p.ProbeArgv("chosen", "Reply with exactly: ok"); !slices.Equal(args, tc.probe) {
+			if args := p.ProbeArgv("chosen", "high", "Reply with exactly: ok"); !slices.Equal(args, tc.probe) {
 				t.Fatalf("probe = %q; want %q", args, tc.probe)
 			}
 		})
@@ -62,19 +67,18 @@ func TestAgentCliBuiltins(t *testing.T) {
 }
 
 func TestRegisteredReviewerRefAndRelay(t *testing.T) {
+	t.Cleanup(func() { agentcli.Configure(nil) })
 	p := agentcli.Profile{
-		ReviewerPrefix: "env -u SAMPLE", Args: []string{"review"}, ModelFlag: "--pick",
-		EffortFlag: "--set", EffortPrefix: "depth=", ReviewerArgs: "--read-only", Relay: true,
+		Name: "custom", ReviewArgs: []string{"review", "--pick", "{model}", "--set", "depth={effort}", "--read-only"}, Relay: true,
 	}
 	withoutRelay := p
-	withoutRelay.Relay = false
+	withoutRelay.Name, withoutRelay.Relay = "local", false
 	withPrompt := p
-	withPrompt.PromptFlag = "--prompt"
-	agentcli.Register(map[string]agentcli.Profile{
-		"custom": p, "local": withoutRelay, "prompted": withPrompt,
-		"plain": {ModelFlag: "--pick", EffortFlag: "--set", Relay: true},
-	})
-	t.Cleanup(func() { agentcli.Register(nil) })
+	withPrompt.Name = "prompted"
+	withPrompt.ReviewArgs = slices.Concat(p.ReviewArgs, []string{"--prompt", "{prompt}"})
+	for _, profile := range []agentcli.Profile{p, withoutRelay, withPrompt, {Name: "plain", ReviewArgs: []string{"--pick", "{model}", "--set", "{effort}"}, Relay: true}} {
+		agentcli.Register(profile)
+	}
 
 	for _, tc := range []struct {
 		agent string
@@ -102,37 +106,37 @@ func TestRegisteredReviewerRefAndRelay(t *testing.T) {
 		})
 	}
 	for _, command := range []string{
-		withPrompt.ReviewerCommand("unregistered", "m", "high"),
-		p.ReviewerCommand("custom", "m", "high") + ` --prompt "$(cat)"`,
+		"unregistered review --pick m --set depth=high --read-only",
+		p.ReviewerCommand("m", "high") + ` --prompt "$(cat)"`,
 	} {
 		if _, ok := config.ReviewerRef(command); ok || config.RelayReviewer(command, true) {
 			t.Errorf("accepted reviewer command outside its profile %q", command)
 		}
 	}
 	for _, command := range []string{
-		withPrompt.ReviewerCommand("prompted", "$MODEL", "high"),
-		withPrompt.ReviewerCommand("prompted", "m", "high*"),
+		withPrompt.ReviewerCommand("$MODEL", "high"),
+		withPrompt.ReviewerCommand("m", "high*"),
 	} {
 		if config.RelayReviewer(command, true) {
 			t.Errorf("accepted unsafe relay arguments in %q", command)
 		}
 	}
-	defaultModel := withPrompt.ReviewerCommand("prompted", "", "high")
+	defaultModel := withPrompt.ReviewerCommand("", "high")
 	if !config.RelayReviewer(defaultModel, true) || config.RelayReviewer(defaultModel, false) {
 		t.Errorf("only a structured reviewer may relay with the default model: %q", defaultModel)
 	}
 }
 
 const agyDriverTOML = `[agents.agy]
-model_flag = "--model"
-effort_flag = "--effort"
-prompt_flag = "--print"
-reviewer_args = "--disable-slash-commands --mode plan"
-probe_args = ["--sandbox", "--mode", "plan"]
-correction_args = ["--mode", "accept-edits", "--add-dir", "{dir}"]
+binary = "agy"
+probe_args = ["--model", "{model}", "--sandbox", "--mode", "plan", "--print"]
+review_args = ["--model", "{model}", "--effort", "{effort}", "--disable-slash-commands", "--mode", "plan", "--print", "{prompt}"]
+correction_args = ["--print", "{prompt}", "--model", "{model}", "--effort", "{effort}", "--mode", "accept-edits", "--add-dir", "{dir}"]
+relay = false
 `
 
 func TestLoadAgyProfile(t *testing.T) {
+	t.Cleanup(func() { agentcli.Configure(nil) })
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "orca-factory")
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -145,14 +149,14 @@ func TestLoadAgyProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, ok := agentcli.Lookup("agy")
-	if !ok || p.ReviewerArgs != "--disable-slash-commands --mode plan" || !slices.Equal(p.ProbeArgs, []string{"--sandbox", "--mode", "plan"}) {
+	if !ok || p.Binary != "agy" || p.Relay {
 		t.Fatalf("driver.toml profile = %+v, %t", p, ok)
 	}
 	got, err := config.GenerateReviewerCommand("agy:chosen:high")
 	if err != nil || got != `agy --model chosen --effort high --disable-slash-commands --mode plan --print "$(cat)"` {
 		t.Fatalf("reviewer = %q, %v", got, err)
 	}
-	if got := p.ProbeArgv("chosen", "probe"); !slices.Equal(got, []string{"--model", "chosen", "--sandbox", "--mode", "plan", "--print", "probe"}) {
+	if got := p.ProbeArgv("chosen", "high", "probe"); !slices.Equal(got, []string{"--model", "chosen", "--sandbox", "--mode", "plan", "--print", "probe"}) {
 		t.Fatalf("probe = %q", got)
 	}
 	if got := p.CorrectionArgv("chosen", "high", "update file", "/dir"); !slices.Equal(got, []string{"--print", "update file", "--model", "chosen", "--effort", "high", "--mode", "accept-edits", "--add-dir", "/dir"}) {
@@ -231,6 +235,14 @@ func TestDriverUsesConfiguredAgent(t *testing.T) {
 		}
 	})
 
+	t.Run("doctor", func(t *testing.T) {
+		raw, err := run("doctor", "--json")
+		var report struct{ Agents []string }
+		if json.Unmarshal(raw, &report) != nil || !slices.Equal(report.Agents, []string{"agy", "claude", "codex"}) {
+			t.Fatalf("doctor agents = %v, err = %v, output = %s", report.Agents, err, raw)
+		}
+	})
+
 	t.Run("config", func(t *testing.T) {
 		for _, tc := range []struct {
 			name, extra string
@@ -249,11 +261,15 @@ func TestDriverUsesConfiguredAgent(t *testing.T) {
 				}
 				type entry struct{ Key, Value, Source string }
 				var snapshot struct {
+					Agents    []string
 					Problems  []string
 					Scheduler []entry
 				}
 				if err := json.Unmarshal(raw, &snapshot); err != nil {
 					t.Fatal(err)
+				}
+				if !slices.Equal(snapshot.Agents, []string{"agy", "claude", "codex"}) {
+					t.Errorf("config agents = %v", snapshot.Agents)
 				}
 				var problems []string
 				for _, problem := range snapshot.Problems {
@@ -274,4 +290,34 @@ func TestDriverUsesConfiguredAgent(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestConfiguredProbeBinaryAndTemplates(t *testing.T) {
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "probe binary")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n[ \"$#\" = 3 ] && [ \"$1\" = 'm v' ] && [ \"$2\" = '--level=high' ] && [ \"$3\" = 'Reply with exactly: ok' ] && echo ok\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	agentcli.Register(agentcli.Profile{Name: "probe-alias", Binary: bin, ProbeArgs: []string{"{model}", "--level={effort}"}})
+	got := modelhealth.Probe(t.Context(), modelhealth.Ref{Agent: "probe-alias", Model: "m v", Effort: "high"}, dir, modelhealth.Endpoint{})
+	if got.State != modelhealth.OK {
+		t.Fatalf("probe = %+v", got)
+	}
+}
+
+func TestReviewerSharedBinaryRequiresUniqueRelayProfile(t *testing.T) {
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	one := agentcli.Profile{Name: "alias-a", Binary: "shared", ReviewArgs: []string{"--model", "{model}"}, Relay: true}
+	two := one
+	two.Name, two.Relay = "alias-b", false
+	agentcli.Register(one)
+	agentcli.Register(two)
+	command, err := config.GenerateReviewerCommand("alias-b:m:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.RelayReviewer(command, true) {
+		t.Error("ambiguous command allowed relay credentials")
+	}
 }
