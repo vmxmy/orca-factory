@@ -26,6 +26,7 @@ import (
 // install returns to pending. Every other state converges in whichever serve
 // reads it: passed, or paused with the drain this deployment started resumed.
 const (
+	missingObjectExitCode  = 128
 	maintenanceWait        = 2 * time.Minute
 	selfDeployBuildTimeout = 10 * time.Minute
 	selfDeploySmokeTimeout = 5 * time.Minute
@@ -349,6 +350,17 @@ func (r *Runtime) runningContains(ctx context.Context, repo, sha string) bool {
 	}
 	_, err := r.runFor(ctx, time.Minute, repo, "git", "merge-base", "--is-ancestor", sha, r.Version)
 	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == missingObjectExitCode {
+		if _, err = r.runFor(ctx, time.Minute, repo, "git", "fetch", "origin", sha); err != nil {
+			runx.LoggerFrom(ctx).Info("cannot fetch the squash SHA", "sha", sha, "err", err)
+			return false
+		}
+		_, err = r.runFor(ctx, time.Minute, repo, "git", "merge-base", "--is-ancestor", sha, r.Version)
+		if errors.As(err, &exit) && exit.ExitCode() == missingObjectExitCode {
+			runx.LoggerFrom(ctx).Info("cannot resolve ancestry after fetching the squash SHA", "running", r.Version, "sha", sha, "err", err)
+			return false
+		}
+	}
 	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
 		runx.LoggerFrom(ctx).Warn("cannot tell whether the running driver contains the squash SHA", "running", r.Version, "sha", sha, "err", err)
 	}
