@@ -41,15 +41,37 @@ func (e *Executor) recovery() Recovery {
 	}
 	return nil
 }
+
+func correctionPrimary() modelhealth.Ref {
+	if ref, err := modelhealth.Parse(os.Getenv("AGENT_CORRECTION")); err == nil {
+		return ref
+	}
+	return modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
+}
+
+func correctionFallbackModel() modelhealth.Ref {
+	if ref, err := modelhealth.Parse(os.Getenv("AGENT_CORRECTION_FALLBACK")); err == nil {
+		return ref
+	}
+	return modelhealth.Ref{Agent: "codex", Model: "gpt-6.2-astra", Effort: "high"}
+}
+
 func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error {
 	role, err := readRole(req.Repo, "correction.md")
 	if err != nil {
 		return err
 	}
 	prompt := fmt.Sprintf("%s\n\nCorrection file: %q\nCorrection: %d/3\nFailure: %s\nBrief:\n%s", role, req.Path, req.Number, req.Cause, req.Brief)
-	run := c.Run
-	if run == nil {
-		run = runx.Run
+	ref := correctionPrimary()
+	if c.StateRoot != "" {
+		registry, err := modelhealth.Open(c.StateRoot)
+		if err != nil {
+			return fmt.Errorf("correction model registry: %w", err)
+		}
+		var ok bool
+		if ref, ok = registry.Select([]modelhealth.Ref{ref, correctionFallbackModel()}, time.Now()); !ok {
+			return errors.New("all correction model candidates unavailable")
+		}
 	}
 	// A coordinator subprocess must not inherit this worker's Orca hooks.
 	env := make([]string, 0)
@@ -61,14 +83,42 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 		}
 		env = append(env, entry)
 	}
-	_, err = run(ctx, runx.Spec{
-		Path: "claude",
-		Args: []string{"-p", prompt, "--permission-mode", "acceptEdits", "--add-dir", filepath.Dir(req.Path),
-			"--allowedTools", "Read,Grep,Glob,Write,Edit", "--tools", "Read,Grep,Glob,Write,Edit"},
-		Dir: req.Repo, Env: env, Timeout: 10 * time.Minute,
-	})
+	spec := runx.Spec{Path: ref.Agent, Dir: req.Repo, Env: env, Timeout: 10 * time.Minute}
+	switch ref.Agent {
+	case "claude":
+		spec.Args = []string{"-p", prompt, "--model", ref.Model, "--effort", ref.Effort,
+			"--permission-mode", "acceptEdits", "--add-dir", filepath.Dir(req.Path),
+			"--allowedTools", "Read,Grep,Glob,Write,Edit", "--tools", "Read,Grep,Glob,Write,Edit"}
+	case "codex":
+		dir, err := os.MkdirTemp("", "correction-input-*")
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := os.RemoveAll(dir); err != nil {
+				runx.LoggerFrom(ctx).Warn("correction input cleanup failed", "err", err)
+			}
+		}()
+		input := filepath.Join(dir, "prompt")
+		if err := os.WriteFile(input, []byte(prompt), 0o600); err != nil {
+			return err
+		}
+		spec.Path = "/bin/sh"
+		spec.Args = []string{"-c", `exec "$@" < "$0"`, input, "codex", "exec", "--model", ref.Model, "-c", "model_reasoning_effort=" + ref.Effort,
+			"--sandbox", "workspace-write", "--add-dir", filepath.Dir(req.Path), "--ephemeral", "-"}
+	default:
+		return errors.New("correction agent must be claude or codex")
+	}
+	output, err := c.runSpec(ctx, spec)
+	if err == nil {
+		return nil
+	}
+	if _, _, recordErr := config.RetryAfterModelError(c.StateRoot, ref, nil, output, err, time.Now()); recordErr != nil {
+		runx.LoggerFrom(ctx).Warn("correction model error not recorded", "err", recordErr)
+	}
 	return err
 }
+
 func (c *Commands) orcaCall(ctx context.Context, args ...string) (orca.Receipt, error) {
 	path, err := runx.OrcaPath()
 	if err != nil {
