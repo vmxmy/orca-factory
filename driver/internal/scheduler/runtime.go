@@ -73,6 +73,7 @@ type Runtime struct {
 	closed          map[string]map[string]closedTicket
 	reclaimWarned   map[string]string
 	reclaimFailures map[string]int
+	isAncestorCache map[string]isAncestorEntry
 	// closedHistories holds only tickets classified closed in the last snapshot,
 	// keyed by repository and issue ID. A full sync discards them at the start,
 	// and only successful snapshots rebuild them.

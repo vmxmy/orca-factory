@@ -314,10 +314,60 @@ func TestReclaimTerminalCloseFailure(t *testing.T) {
 	}
 }
 
+func TestReclaimIsAncestorCache(t *testing.T) {
+	w := Workspace{Path: "/ws/OF-673-executor"}
+	head, status := "first", ""
+	var ancestorErr error
+	var revParse, mergeBase, revList int
+	r := &Runtime{Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+		switch s.Args[0] {
+		case "status":
+			return []byte(status), nil
+		case "rev-parse":
+			revParse++
+			return []byte(head + "\n"), nil
+		case "merge-base":
+			mergeBase++
+			return nil, ancestorErr
+		case "rev-list":
+			revList++
+			return []byte("1\n"), nil
+		}
+		t.Fatalf("unexpected git %v", s.Args)
+		return nil, nil
+	}}
+	check := func(mergedHead string, wantMergeBase, wantRevList int, wantBlocks ...string) {
+		t.Helper()
+		blocks := r.reclaimBlocks(t.Context(), w, false, nil, nil, mergedHead, true)
+		if mergeBase != wantMergeBase {
+			t.Fatalf("merge-base calls = %d, want %d", mergeBase, wantMergeBase)
+		}
+		if !slices.Equal(blocks, wantBlocks) || revList != wantRevList {
+			t.Fatalf("blocks = %v, rev-list calls = %d; want %v, %d", blocks, revList, wantBlocks, wantRevList)
+		}
+	}
+
+	check("merged", 1, 0)
+	status = " M main.go\n"
+	check("merged", 1, 0, "dirty")
+	head, status, ancestorErr = "second", "", gateExit{}
+	check("merged", 2, 1, "unpushed")
+	check("merged", 2, 2, "unpushed")
+	ancestorErr = nil
+	check("next-merged", 3, 2)
+
+	beforeEmpty := revParse
+	check("", 3, 3, "unpushed")
+	if revParse != beforeEmpty {
+		t.Fatalf("empty merged head ran rev-parse %d times", revParse-beforeEmpty)
+	}
+}
+
 // Terminal tickets lose every workspace, active tickets lose only superseded
 // resolver rounds, and each safety condition keeps a workspace with one WARN.
 func TestReclaimWorkspaces(t *testing.T) {
 	const merged = "1111111111111111111111111111111111111111"
+	const head = "2222222222222222222222222222222222222222"
 	ticket := func(id, state string) task.Issue {
 		return task.Issue{ID: id, Identifier: id, Project: task.NamedID{ID: "p"}, State: task.NamedID{Name: state}}
 	}
@@ -346,11 +396,15 @@ func TestReclaimWorkspaces(t *testing.T) {
 				return []byte(" M main.go\n"), nil
 			}
 			return nil, nil
+		case "rev-parse":
+			if slices.Equal(s.Args, []string{"rev-parse", "HEAD"}) {
+				return []byte(head + "\n"), nil
+			}
 		case "merge-base":
-			if (name == "OF-1-executor" || name == "OF-7-executor") && slices.Equal(s.Args[1:], []string{"--is-ancestor", "HEAD", merged}) {
+			if (name == "OF-1-executor" || name == "OF-7-executor") && slices.Equal(s.Args[1:], []string{"--is-ancestor", head, merged}) {
 				return nil, nil
 			}
-			return nil, errors.New("exit status 1")
+			return nil, gateExit{}
 		case "rev-list":
 			if name == "OF-3-executor" || name == "OF-1-executor" || name == "OF-7-executor" {
 				return []byte("1\n"), nil

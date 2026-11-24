@@ -243,10 +243,8 @@ func (r *Runtime) reclaimBlocks(ctx context.Context, w Workspace, pinned bool, t
 	}
 	// A resolver may push corrections from another workspace, leaving this
 	// checkout at an ancestor of the merged head.
-	if mergedHead != "" {
-		if _, err := r.command(ctx, w.Path, "git", "merge-base", "--is-ancestor", "HEAD", mergedHead); err == nil {
-			return blocks
-		}
+	if mergedHead != "" && r.reclaimIsAncestor(ctx, w.Path, mergedHead) {
+		return blocks
 	}
 	ahead, err := r.command(ctx, w.Path, "git", "rev-list", "--count", "HEAD", "--not", "--remotes")
 	switch {
@@ -256,6 +254,32 @@ func (r *Runtime) reclaimBlocks(ctx context.Context, w Workspace, pinned bool, t
 		blocks = append(blocks, "unpushed")
 	}
 	return blocks
+}
+
+type isAncestorEntry struct {
+	head, mergedHead string
+	result           bool
+}
+
+func (r *Runtime) reclaimIsAncestor(ctx context.Context, path, mergedHead string) bool {
+	out, err := r.command(ctx, path, "git", "rev-parse", "HEAD")
+	head := strings.TrimSpace(string(out))
+	if err != nil || head == "" {
+		_, err = r.command(ctx, path, "git", "merge-base", "--is-ancestor", "HEAD", mergedHead)
+		return err == nil
+	}
+	if cached := r.isAncestorCache[path]; cached.head == head && cached.mergedHead == mergedHead {
+		return cached.result
+	}
+	_, err = r.command(ctx, path, "git", "merge-base", "--is-ancestor", head, mergedHead)
+	var exit interface{ ExitCode() int }
+	if err == nil || (errors.As(err, &exit) && exit.ExitCode() == 1) {
+		if r.isAncestorCache == nil {
+			r.isAncestorCache = make(map[string]isAncestorEntry)
+		}
+		r.isAncestorCache[path] = isAncestorEntry{head: head, mergedHead: mergedHead, result: err == nil}
+	}
+	return err == nil
 }
 
 // warnKept logs a kept workspace once per distinct set of blocks.
