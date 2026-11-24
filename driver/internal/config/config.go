@@ -411,15 +411,9 @@ var relayShellLiteral = regexp.MustCompile(`^[A-Za-z0-9._/@+-]*$`)
 // credentials. Only a structured reviewer key may use the default model;
 // a legacy command must name its model.
 func RelayReviewer(command string, structured bool) bool {
-	ref, ok := ReviewerRef(command)
-	if p, ok := agentcli.Lookup(ref.Agent); !ok || !p.Relay {
-		return false
-	}
-	if !ok && structured && ref.Model == "" {
-		generated, err := GenerateReviewerCommand(ref.String())
-		ok = err == nil && generated == command
-	}
-	return ok && relayShellLiteral.MatchString(ref.Model) && relayShellLiteral.MatchString(ref.Effort)
+	ref, profile := matchReviewer(command)
+	return profile.Relay && (structured || ref.Model != "") &&
+		relayShellLiteral.MatchString(ref.Model) && relayShellLiteral.MatchString(ref.Effort)
 }
 
 var assignment = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)

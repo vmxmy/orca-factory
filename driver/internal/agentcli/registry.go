@@ -85,15 +85,48 @@ func (p Profile) options(modelFlag, model, effort string, includeEmpty bool) []s
 	return args
 }
 
-func (p Profile) ReviewerCommand(agent, model, effort string) string {
-	parts := slices.Concat([]string{agent}, p.Args, p.options(p.ModelFlag, model, effort, false))
+const reviewerStdin = `"$(cat)"`
+
+func (p Profile) reviewerParts(agent string) (prefix, suffix string) {
+	prefix = strings.Join(append([]string{p.ReviewerPrefix, agent}, p.Args...), " ")
 	if p.ReviewerArgs != "" {
-		parts = append(parts, p.ReviewerArgs)
+		suffix = " " + p.ReviewerArgs
 	}
 	if p.PromptFlag != "" {
-		parts = append(parts, p.PromptFlag, `"$(cat)"`)
+		suffix += " " + p.PromptFlag + " " + reviewerStdin
 	}
-	return strings.TrimSpace(p.ReviewerPrefix + " " + strings.Join(parts, " "))
+	return prefix, suffix
+}
+
+func (p Profile) ReviewerCommand(agent, model, effort string) string {
+	prefix, suffix := p.reviewerParts(agent)
+	args := append([]string{prefix}, p.options(p.ModelFlag, model, effort, false)...)
+	return strings.TrimSpace(strings.Join(args, " ") + suffix)
+}
+
+// MatchReviewerCommand recovers the options of an exact generated command.
+func (p Profile) MatchReviewerCommand(agent, command string) (model, effort string, ok bool) {
+	prefix, suffix := p.reviewerParts(agent)
+	options, hasPrefix := strings.CutPrefix(command, strings.TrimSpace(prefix))
+	options, hasSuffix := strings.CutSuffix(options, strings.TrimSpace(suffix))
+	if !hasPrefix || !hasSuffix || strings.ContainsAny(options, ";&|<>()") {
+		return "", "", false
+	}
+	literal := command
+	if p.PromptFlag != "" {
+		literal = strings.TrimSuffix(literal, reviewerStdin)
+	}
+	if strings.ContainsAny(literal, "'\"\\$`") {
+		return "", "", false
+	}
+	fields := strings.Fields(options)
+	if len(fields) >= 2 && fields[0] == p.ModelFlag {
+		model, fields = fields[1], fields[2:]
+	}
+	if len(fields) == 2 && fields[0] == p.EffortFlag {
+		effort = strings.TrimPrefix(fields[1], p.EffortPrefix)
+	}
+	return model, effort, p.ReviewerCommand(agent, model, effort) == command
 }
 
 func (p Profile) promptArgv(prompt string) []string {
