@@ -381,6 +381,29 @@ func TestResumedParkedTicketWithMergeEvidenceReturnsToResolver(t *testing.T) {
 	}
 }
 
+func TestResumedParkedTicketWithWaitingResolutionReturnsToResolver(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		resolution *resolver.Record
+		kind       ActionKind
+		reason     string
+	}{
+		{"waiting", &resolver.Record{Version: 1, Attempt: 2, Phase: "waiting"}, Resolve, "parked ticket resumed"},
+		{"applied", &resolver.Record{Version: 1, Attempt: 2, Phase: "applied"}, Claim, ""},
+		{"no resolution", nil, Claim, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeBackend{tickets: []Ticket{{ID: "p", Identifier: "OF-9", Repo: "a", Candidate: true, Resumed: true, Resolution: tc.resolution}}}
+			if err := setup(f).Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.actions) != 1 || f.actions[0].Kind != tc.kind || f.actions[0].Reason != tc.reason {
+				t.Fatalf("resumed parked ticket actions=%+v, want one %s action with reason %q", f.actions, tc.kind, tc.reason)
+			}
+		})
+	}
+}
+
 func TestParkedMergeHeadPausesLane(t *testing.T) {
 	sha := strings.Repeat("b", 40)
 	batch := &merge.DeploymentBatch{SHA: sha, Members: []merge.DeploymentMember{{TicketID: "id", QueueID: "q1", MergeSHA: sha}}}
