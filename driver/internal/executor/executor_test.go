@@ -395,7 +395,10 @@ func TestWorkerScopeAutoApproveWithExplicitAutoReview(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(profile), 0700); err != nil {
 				t.Fatal(err)
 			}
-			body := "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD=review\nAGENT_TIER_DEFAULT=codex::low\nAGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_PROJECT=owner/repo\nAGENT_MODE=" + tc.mode + "\nAGENT_AUTO_REVIEW=" + tc.autoReview + "\n"
+			body := "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD=review\nAGENT_TIER_DEFAULT=codex::low\nAGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_PROJECT=owner/repo\nAGENT_AUTO_REVIEW=" + tc.autoReview + "\n"
+			if tc.mode != "" {
+				body += "AGENT_MODE=" + tc.mode + "\n"
+			}
 			if err := os.WriteFile(profile, []byte(body), 0600); err != nil {
 				t.Fatal(err)
 			}

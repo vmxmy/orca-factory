@@ -67,6 +67,7 @@ type Config struct {
 	Merging                                                             bool
 	Lane3Globs                                                          []string
 	Machine, Mode                                                       string
+	Env                                                                 map[string]string
 	TierSettings                                                        map[string]string
 	WorkerSkills                                                        []string
 	TierChain                                                           []string
@@ -541,7 +542,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				if cp.MergeSpec == "" {
 					var extended bool
 					var extendErr error
-					if c.Mode == "auto" {
+					if c.Mode == "auto" || explicitAutoReview(c.Env, "scope") || explicitAutoReview(c.Env, "top") {
 						extended, extendErr = intake.AutoApproveWorkerScope(ctx, e.Issues, t.ID, scopeBlocked, strings.Join(c.Lane3Globs, " "), e.Now())
 					} else if os.Getenv("AGENT_WORKER_AUTO_SCOPE") == "1" {
 						extended, extendErr = intake.ExtendWorkerScope(ctx, e.Issues, t.ID, t.Scope, scopeBlocked, strings.Join(c.Lane3Globs, " "))
@@ -776,6 +777,15 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 }
 
 var component = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func explicitAutoReview(env map[string]string, name string) bool {
+	for _, flag := range strings.Split(env["AGENT_AUTO_REVIEW"], ",") {
+		if strings.TrimSpace(flag) == name {
+			return true
+		}
+	}
+	return false
+}
 
 func hasEffect(fx []machine.Effect, want machine.Effect) bool {
 	for _, f := range fx {
