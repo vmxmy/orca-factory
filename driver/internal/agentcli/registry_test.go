@@ -347,6 +347,13 @@ func TestProbeKeepsStdinOperand(t *testing.T) {
 	}
 }
 
+func TestProbeKeepsSandboxBeforeOptionalOperand(t *testing.T) {
+	p := agentcli.Profile{ProbeArgs: []string{"--sandbox", "{model}", "--print"}}
+	if got := p.ProbeArgv("", "", "ping"); !slices.Equal(got, []string{"--sandbox", "--print", "ping"}) {
+		t.Fatalf("default probe arguments = %q", got)
+	}
+}
+
 func TestLoadKeepsExplicitRegistration(t *testing.T) {
 	const name = "registered-extension"
 	agentcli.Register(agentcli.Profile{Name: name, Binary: "extension"})
@@ -374,7 +381,7 @@ func TestClaudeExtendedContextReviewer(t *testing.T) {
 }
 
 func TestClaudeReviewerLiteralModel(t *testing.T) {
-	for _, name := range []string{"team%2Fopus", "team~opus", "team#opus"} {
+	for _, name := range []string{"team%2Fopus", "team~opus", "team#opus", "team·opus"} {
 		original := "claude -p --model " + name + " --effort high --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"
 		want := modelhealth.Ref{Agent: "claude", Model: name, Effort: "high"}
 		if command, err := config.GenerateReviewerCommand(want.String()); err != nil || command != original {

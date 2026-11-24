@@ -93,20 +93,24 @@ func expand(template []string, model, effort, prompt, dir string, omitEmpty bool
 	sub := strings.NewReplacer("{model}", model, "{effort}", effort, "{prompt}", prompt, "{dir}", dir)
 	args := make([]string, 0, len(template))
 	options := true
-	previousOption := false
-	for _, arg := range template {
+	for i, arg := range template {
 		if arg == "--" {
 			options = false
 		}
 		if omitEmpty && ((model == "" && strings.Contains(arg, "{model}")) || (effort == "" && strings.Contains(arg, "{effort}"))) {
-			if previousOption && !strings.HasPrefix(arg, "-") {
-				args = args[:len(args)-1]
+			// A positional placeholder can follow a boolean flag. Only drop
+			// a separate option when it takes this specific role value.
+			if options && i > 0 {
+				last := template[i-1]
+				if (arg == "{model}" && (last == "--model" || last == "-m")) ||
+					(arg == "{effort}" && last == "--effort") ||
+					(arg == "model_reasoning_effort={effort}" && last == "-c") {
+					args = args[:len(args)-1]
+				}
 			}
-			previousOption = false
 			continue
 		}
 		args = append(args, sub.Replace(arg))
-		previousOption = options && len(arg) > 1 && arg[0] == '-' && !strings.ContainsAny(arg, "={}")
 	}
 	return args
 }
@@ -129,7 +133,7 @@ func (p Profile) CorrectionStdin() bool {
 }
 
 // A leading tilde or hash has shell syntax; inside an argument both are literal.
-const shellWordPattern = `[\pL\pM\pN_.,/@%+=:-][\pL\pM\pN_.,/@%+=:~#!^-]*`
+const shellWordPattern = `[a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:^-][a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:~#!^-]*`
 
 var shellWord = regexp.MustCompile("^" + shellWordPattern + "$")
 
