@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -179,8 +180,16 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 }
 
 func (r *Runtime) removeWorkspace(ctx context.Context, v Verdict, terminals []orca.Terminal, listings []repositoryWorkspaces, logger *slog.Logger) []string {
+	marker := ""
+	if r.StateRoot != "" {
+		hashPath := fmt.Sprintf("%x", sha256.Sum256([]byte(v.Path)))[:16]
+		marker = filepath.Join(r.StateRoot, "reclaim-gave-up", hashPath)
+		if _, err := os.Stat(marker); err == nil {
+			return []string{"remove-failed-giving-up"}
+		}
+	}
 	if r.reclaimFailures[v.Path] >= maxReclaimFailures {
-		return []string{"remove-failed-giving-up"}
+		return markReclaimGaveUp(marker)
 	}
 	for _, terminal := range terminals {
 		if err := r.Workspaces.TerminalClose(ctx, terminal.Handle); err != nil {
@@ -211,13 +220,25 @@ func (r *Runtime) removeWorkspace(ctx context.Context, v Verdict, terminals []or
 		}
 		r.reclaimFailures[v.Path]++
 		if r.reclaimFailures[v.Path] >= maxReclaimFailures {
-			return []string{"remove-failed-giving-up"}
+			return markReclaimGaveUp(marker)
 		}
 		return []string{"remove-failed"}
 	}
 	delete(r.reclaimFailures, v.Path)
 	logger.Info("workspace removed", "path", v.Path, "reason", v.Reason)
 	return nil
+}
+
+func markReclaimGaveUp(marker string) []string {
+	if marker != "" {
+		if err := os.MkdirAll(filepath.Dir(marker), 0700); err != nil {
+			return []string{"remove-failed"}
+		}
+		if err := os.WriteFile(marker, nil, 0600); err != nil {
+			return []string{"remove-failed"}
+		}
+	}
+	return []string{"remove-failed-giving-up"}
 }
 
 func (r *Runtime) reclaimBlocks(ctx context.Context, w Workspace, pinned bool, terminals []orca.Terminal, terminalErr error, mergedHead string, canClose bool) []string {

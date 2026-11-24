@@ -138,6 +138,102 @@ func TestReclaimWorktreeRmRuntimeErrorCounts(t *testing.T) {
 	}
 }
 
+func TestReclaimFailurePersistsAcrossRestart(t *testing.T) {
+	const path = "/ws/OF-677-executor"
+	const markerName = "fb65df4136854e27"
+	v := Verdict{Workspace: Workspace{Path: path}}
+	logger := slog.New(slog.DiscardHandler)
+	newRuntime := func(root string, calls *int) *Runtime {
+		fake := &fakeWorkspaces{onRemove: func(string) error {
+			*calls++
+			return &orca.RejectedError{Code: "runtime_error"}
+		}}
+		return &Runtime{StateRoot: root, Workspaces: fake}
+	}
+
+	t.Run("restart and manual marker removal", func(t *testing.T) {
+		root := t.TempDir()
+		marker := filepath.Join(root, "reclaim-gave-up", markerName)
+		calls := 0
+		first := newRuntime(root, &calls)
+		for i := 1; i <= maxReclaimFailures; i++ {
+			want := "remove-failed"
+			if i == maxReclaimFailures {
+				want = "remove-failed-giving-up"
+			}
+			if blocks := first.removeWorkspace(t.Context(), v, nil, nil, logger); !slices.Equal(blocks, []string{want}) || calls != i {
+				t.Fatalf("attempt %d: blocks=%v calls=%d; want %s and %d", i, blocks, calls, want, i)
+			}
+			if i < maxReclaimFailures {
+				if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("marker before threshold: %v", err)
+				}
+			}
+		}
+		if _, err := os.Stat(marker); err != nil {
+			t.Fatalf("marker after threshold: %v", err)
+		}
+		second := newRuntime(root, &calls)
+		if blocks := second.removeWorkspace(t.Context(), v, nil, nil, logger); !slices.Equal(blocks, []string{"remove-failed-giving-up"}) || calls != maxReclaimFailures {
+			t.Fatalf("after restart: blocks=%v calls=%d; want giving up without another removal", blocks, calls)
+		}
+		if err := os.Remove(marker); err != nil {
+			t.Fatal(err)
+		}
+		third := newRuntime(root, &calls)
+		for i := 1; i <= maxReclaimFailures; i++ {
+			want := "remove-failed"
+			if i == maxReclaimFailures {
+				want = "remove-failed-giving-up"
+			}
+			if blocks := third.removeWorkspace(t.Context(), v, nil, nil, logger); !slices.Equal(blocks, []string{want}) || calls != maxReclaimFailures+i {
+				t.Fatalf("after marker removal, attempt %d: blocks=%v calls=%d; want %s and %d", i, blocks, calls, want, maxReclaimFailures+i)
+			}
+		}
+		if _, err := os.Stat(marker); err != nil {
+			t.Fatalf("marker after reaching threshold again: %v", err)
+		}
+	})
+
+	t.Run("retry failed marker write", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, "reclaim-gave-up")
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(dir, markerName)
+		if err := os.Symlink(filepath.Join(root, "missing", "marker"), marker); err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		r := newRuntime(root, &calls)
+		checkAttempt := func(runtime *Runtime, want string, wantCalls int) {
+			t.Helper()
+			blocks := runtime.removeWorkspace(t.Context(), v, nil, nil, logger)
+			if !slices.Equal(blocks, []string{want}) || calls != wantCalls {
+				t.Fatalf("blocks=%v calls=%d; want %s and %d", blocks, calls, want, wantCalls)
+			}
+		}
+		for i := 1; i <= maxReclaimFailures; i++ {
+			checkAttempt(r, "remove-failed", i)
+		}
+		checkAttempt(r, "remove-failed", maxReclaimFailures)
+
+		if err := os.Remove(marker); err != nil {
+			t.Fatal(err)
+		}
+		checkAttempt(r, "remove-failed-giving-up", maxReclaimFailures)
+		info, err := os.Lstat(marker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.Mode().IsRegular() {
+			t.Fatalf("marker mode = %v; want a regular file", info.Mode())
+		}
+		checkAttempt(newRuntime(root, &calls), "remove-failed-giving-up", maxReclaimFailures)
+	})
+}
+
 func TestReclaimClosesIdleTerminals(t *testing.T) {
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	for _, state := range []string{"Done", "Canceled"} {
