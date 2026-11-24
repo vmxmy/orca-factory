@@ -181,10 +181,11 @@ const (
 
 // fullSync is true when this round reads the ledger in full. An unreadable
 // maintenance state also reads in full, which is never wrong.
-// resumesResolution reports a restored parked ticket whose frozen merge evidence
-// forbids a fresh claim; Agent处置 continues from that evidence instead.
+// resumesResolution reports a restored parked ticket whose unresolved record or
+// frozen merge evidence requires Agent处置 to continue instead of a fresh claim.
 func (t Ticket) resumesResolution() bool {
-	return t.Candidate && t.Resumed && (t.Handoff != nil || t.MergeProblem != "")
+	return t.Candidate && t.Resumed && (t.Handoff != nil || t.MergeProblem != "" ||
+		(t.Resolution != nil && t.Resolution.Phase != "applied"))
 }
 
 func (s *Scheduler) fullSync() bool {
