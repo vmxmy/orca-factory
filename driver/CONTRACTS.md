@@ -523,7 +523,9 @@ correction 会话读取执行器的两个环境变量。未设置或为空时使
 | `AGENT_CORRECTION` | 主选 `agent:model:effort` | `claude:claude-opus-5-5:high` |
 | `AGENT_CORRECTION_FALLBACK` | 空格分隔的有序候选列表，每项为 `agent:model:effort` | `codex:gpt-6.2-astra:high` |
 
-`Commands.Correction` 从主选开始查登记，使用第一个未在冷却的模型。Claude 用 `claude -p` 的 `--model` 和 `--effort` 接收所选档位，Codex 用 `codex exec -m <model> -c model_reasoning_effort=<effort> --ephemeral`。模型错误触发登记，并在同一轮内最多换一个候选。启动前所有候选都在冷却时，执行器直接写入 OF-661 的兜底文本。见 `TestCorrectionSessionSelectsModelFromRegistry`。
+`Commands.Correction` 从主选开始查登记，使用第一个未在冷却的模型。Claude 用 `claude -p` 的 `--model` 和 `--effort` 接收所选档位。选中 Codex 时，执行器调用 `orca exec -m <model> -c model_reasoning_effort=<effort> --ephemeral`，最后一个参数是提示词。
+
+会话报错退出时，执行器先检查 correction 文件的第一个非空行。已有 `STALLED:` 判定时按停滞规则处理，否则按命令输出登记模型错误，并在本轮内最多换一个可用候选。启动前所有候选都在冷却时，执行器按 OF-661 把失败原因及已有的失败摘要写进子任务简报。见 `TestCorrectionSessionSelectsModelFromRegistry`。
 
 - `config.ParseFallback` 解析 `<键名>_FALLBACK`：空格分隔、有序的 `agent:model:effort` 列表，每项按 `modelhealth.Parse` 校验；空值表示没有兜底。错误只给出键名与候选序号，不含配置值（`TestFallbackKeysParse`）。施工与处置选中 model 为空的候选时用 agent 默认模型且不传 effort，与配置档位相同；需求助手、接入 Agent 与审查按候选原样传参。终审选中不完整的候选时按终审档位无效转人。
 - `config.SelectModel` 在有兜底时打开状态根目录的 `model-health.json`，用 `Registry.Select` 在「主选 + 兜底」中取第一个未在冷却的候选；全部冷却时返回主选。没有兜底时不读登记。登记读取失败时返回主选和错误，调用方记 warn 日志后按主选继续。

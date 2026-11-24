@@ -56,7 +56,7 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 		if registry, err := modelhealth.Open(c.StateRoot); err == nil {
 			var ok bool
 			if ref, ok = registry.Select(candidates, time.Now()); !ok {
-				return os.WriteFile(req.Path, correctionFallback(nil, req.Cause, "所有模型不可用"), 0o600)
+				return errors.New("all correction model candidates unavailable")
 			}
 		}
 	}
@@ -81,6 +81,7 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 				"--permission-mode", "acceptEdits", "--add-dir", filepath.Dir(req.Path),
 				"--allowedTools", "Read,Grep,Glob,Write,Edit", "--tools", "Read,Grep,Glob,Write,Edit"}
 		case "codex":
+			spec.Path = "orca"
 			spec.Args = []string{"exec", "-m", ref.Model, "-c", "model_reasoning_effort=" + ref.Effort, "--ephemeral", prompt}
 		default:
 			return errors.New("correction agent must be claude or codex")
@@ -88,6 +89,11 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 		output, err := c.runSpec(ctx, spec)
 		if err == nil {
 			return nil
+		}
+		if data, readErr := os.ReadFile(req.Path); readErr == nil {
+			if _, stalled := stallVerdict(data); stalled {
+				return err
+			}
 		}
 		next, retry, recordErr := config.RetryAfterModelError(c.StateRoot, ref, candidates, output, err, time.Now())
 		if !retry {

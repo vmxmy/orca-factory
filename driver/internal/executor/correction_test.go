@@ -68,9 +68,13 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 					t.Fatalf("model calls=%d correction requests=%d child tasks=%d", len(calls), len(recovery.requests), len(recovery.specs))
 				}
 				req := recovery.requests[0]
-				data, err := os.ReadFile(req.Path)
-				if err != nil || !strings.Contains(string(data), "执行器代写：") || !strings.Contains(string(data), req.Cause) || !strings.Contains(recovery.specs[0], string(data)) {
-					t.Fatalf("correction file=%q err=%v child=%q", data, err, recovery.specs[0])
+				summary, err := os.ReadFile(failLogPath(e.Config, ticket))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "执行器代写：correction 会话未写出修复步骤（会话失败），按下列失败证据修复。\n失败原因：" + req.Cause + "\n失败摘要：" + strings.TrimSpace(string(summary))
+				if !strings.Contains(recovery.specs[0], want+"\n") {
+					t.Fatalf("child task missing fallback with gate summary %q: %q", want, recovery.specs[0])
 				}
 				return
 			}
@@ -83,12 +87,14 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			}
 			for i, want := range tc.wantCalls {
 				spec := calls[i]
-				if spec.Path != want.Agent || spec.Timeout != 10*time.Minute || spec.Dir != req.Repo {
-					t.Fatalf("call %d: path=%q timeout=%v dir=%q", i, spec.Path, spec.Timeout, spec.Dir)
-				}
+				wantPath := want.Agent
 				mode, flags := "-p", map[string]string{"--model": want.Model, "--effort": want.Effort}
 				if want.Agent == "codex" {
+					wantPath = "orca"
 					mode, flags = "exec", map[string]string{"-m": want.Model, "-c": "model_reasoning_effort=" + want.Effort}
+				}
+				if spec.Path != wantPath || spec.Timeout != 10*time.Minute || spec.Dir != req.Repo {
+					t.Fatalf("call %d: path=%q want=%q timeout=%v dir=%q", i, spec.Path, wantPath, spec.Timeout, spec.Dir)
 				}
 				if len(spec.Args) == 0 || spec.Args[0] != mode || !strings.Contains(strings.Join(spec.Args, " "), req.Path) {
 					t.Errorf("expected %s and correction path in %q", mode, spec.Args)
@@ -111,4 +117,30 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			}
 		})
 	}
+	t.Run("stalled before weekly limit", func(t *testing.T) {
+		t.Setenv("AGENT_CORRECTION", primary.String())
+		t.Setenv("AGENT_CORRECTION_FALLBACK", fallback.String())
+		state := t.TempDir()
+		req := CorrectionRequest{Repo: t.TempDir(), Path: filepath.Join(state, "correction.md"), Number: 2}
+		writeRole(t, req.Repo, "correction.md", "CORRECTION ROLE\n")
+		const verdict = "STALLED: 同一断言重复失败"
+		limitErr := errors.New("exit status 1")
+		calls := 0
+		commands := Commands{StateRoot: state, Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
+			calls++
+			if calls > 1 {
+				t.Fatalf("started %q after the primary wrote STALLED", spec.Path)
+			}
+			if err := os.WriteFile(req.Path, []byte(verdict), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return []byte("You've hit your weekly limit"), limitErr
+		}}
+		if err := commands.Correction(context.Background(), req); !errors.Is(err, limitErr) {
+			t.Fatalf("session error = %v, want %v", err, limitErr)
+		}
+		if data, err := os.ReadFile(req.Path); err != nil || string(data) != verdict {
+			t.Fatalf("correction file = %q, err = %v", data, err)
+		}
+	})
 }
