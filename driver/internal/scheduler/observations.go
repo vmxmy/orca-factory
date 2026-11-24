@@ -2,26 +2,53 @@ package scheduler
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
 func (r *Runtime) AutomationDisabled(ctx context.Context, repo config.Repository) (bool, error) {
-	// Enabled-automation refusals persist until restart: no client was
-	// initialized for these repositories, so a later disabled automation
-	// cannot admit them. Track does not record unverifiable reads (OF-122).
 	if err := r.refused[repo.Path]; err != nil {
 		return false, err
 	}
+	var cached struct {
+		Error     string
+		ExpiresAt time.Time
+	}
+	path := ""
+	if r.StateRoot != "" {
+		if r.refused == nil {
+			r.refused = map[string]error{}
+		}
+		hashPath := fmt.Sprintf("%x", sha256.Sum256([]byte(repo.Path)))[:16]
+		path = filepath.Join(r.StateRoot, "automations-refused", hashPath)
+		data, err := os.ReadFile(path)
+		info, statErr := os.Stat(path)
+		if err == nil && statErr == nil && time.Now().Before(info.ModTime().Add(24*time.Hour)) && json.Unmarshal(data, &cached) == nil && time.Now().Before(cached.ExpiresAt) {
+			r.refused[repo.Path] = errors.New(cached.Error)
+			return false, r.refused[repo.Path]
+		}
+	}
 	receipt, err := r.Orca.AutomationsList(ctx)
 	if err != nil {
-		return false, fmt.Errorf("automation read failed: %w", err)
+		err = fmt.Errorf("automation read failed: %w", err)
+		if path != "" {
+			r.refused[repo.Path] = err
+			cached.Error, cached.ExpiresAt = err.Error(), time.Now().Add(24*time.Hour)
+			data, _ := json.Marshal(cached)
+			if os.MkdirAll(filepath.Dir(path), 0700) == nil {
+				_ = os.WriteFile(path, data, 0600)
+			}
+		}
+		return false, err
 	}
 	var rows []struct {
 		Enabled    *bool                            `json:"enabled"`

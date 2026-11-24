@@ -235,23 +235,28 @@ func (r *Runtime) initialize(ctx context.Context, repos []config.Repository, new
 	return nil
 }
 
-var errAutomationUnverifiable = errors.New("automation unverifiable")
+var (
+	errAutomationUnverifiable = errors.New("automation unverifiable")
+	errAutomationEnabled      = errors.New("automation enabled; restart required")
+)
 
 // Track binds a ledger client for repo unless one is already bound. A
 // repository whose Orca Automation is enabled is refused until restart. An
-// unverifiable Automation read is not remembered (OF-122): Snapshot and
-// discovery call Track again on a later round. Every other error leaves the
-// runtime unchanged.
+// unverifiable Automation read defers binding. Without a state root, the
+// next round retries the read.
 func (r *Runtime) Track(ctx context.Context, repo config.Repository) error {
 	if r.Clients[repo.Path] != nil {
 		return nil
 	}
-	ok, err := r.AutomationDisabled(ctx, repo)
-	if err != nil && r.refused[repo.Path] == nil {
+	disabled, err := r.AutomationDisabled(ctx, repo)
+	if err != nil {
+		if errors.Is(err, errAutomationEnabled) {
+			return err
+		}
 		return fmt.Errorf("repository deferred: %s: %w; retrying next round: %v", repo.Path, errAutomationUnverifiable, err)
 	}
-	if err != nil || !ok {
-		refusal := fmt.Errorf("repository refused: %s: automation enabled; restart required", repo.Path)
+	if !disabled {
+		refusal := fmt.Errorf("repository refused: %s: %w", repo.Path, errAutomationEnabled)
 		r.refused[repo.Path] = refusal
 		return refusal
 	}
