@@ -94,7 +94,11 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 		if err != nil {
 			return err
 		}
-		defer os.RemoveAll(dir)
+		defer func() {
+			if err := os.RemoveAll(dir); err != nil {
+				runx.LoggerFrom(ctx).Warn("correction input cleanup failed", "err", err)
+			}
+		}()
 		input := filepath.Join(dir, "prompt")
 		if err := os.WriteFile(input, []byte(prompt), 0o600); err != nil {
 			return err
