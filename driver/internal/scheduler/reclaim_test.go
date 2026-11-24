@@ -314,10 +314,133 @@ func TestReclaimTerminalCloseFailure(t *testing.T) {
 	}
 }
 
+func TestReclaimIsAncestorCache(t *testing.T) {
+	w := Workspace{Path: "/ws/OF-673-executor"}
+	shallowPath := filepath.Join(t.TempDir(), "shallow")
+	head, status := "first", ""
+	var ancestorErr error
+	var revParse, mergeBase, revList int
+	r := &Runtime{Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+		switch s.Args[0] {
+		case "status":
+			return []byte(status), nil
+		case "rev-parse":
+			if slices.Equal(s.Args, []string{"rev-parse", "HEAD", "--path-format=absolute", "--git-path", "shallow"}) {
+				revParse++
+				return []byte(head + "\n" + shallowPath + "\n"), nil
+			}
+		case "merge-base":
+			mergeBase++
+			return nil, ancestorErr
+		case "rev-list":
+			revList++
+			return []byte("1\n"), nil
+		}
+		t.Fatalf("unexpected git %v", s.Args)
+		return nil, nil
+	}}
+	check := func(mergedHead string, wantMergeBase, wantRevList int, wantBlocks ...string) {
+		t.Helper()
+		blocks := r.reclaimBlocks(t.Context(), w, false, nil, nil, mergedHead, true)
+		if mergeBase != wantMergeBase {
+			t.Fatalf("merge-base calls = %d, want %d", mergeBase, wantMergeBase)
+		}
+		if !slices.Equal(blocks, wantBlocks) || revList != wantRevList {
+			t.Fatalf("blocks = %v, rev-list calls = %d; want %v, %d", blocks, revList, wantBlocks, wantRevList)
+		}
+	}
+
+	check("merged", 1, 0)
+	status = " M main.go\n"
+	check("merged", 1, 0, "dirty")
+	head, status, ancestorErr = "second", "", gateExit{}
+	check("merged", 2, 1, "unpushed")
+	check("merged", 2, 2, "unpushed")
+	ancestorErr = nil
+	check("next-merged", 3, 2)
+
+	beforeEmpty := revParse
+	check("", 3, 3, "unpushed")
+	if revParse != beforeEmpty {
+		t.Fatalf("empty merged head ran rev-parse %d times", revParse-beforeEmpty)
+	}
+
+	t.Run("recorded rev-parse", func(t *testing.T) {
+		output, err := os.ReadFile("../../testdata/recorded/git-rev-parse-head-shallow.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		const recordedHead = "4b48451bf7c29cbd0092051ff52ad42119cd2d3c"
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "shallow"), []byte(recordedHead+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		r := &Runtime{Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+			if !slices.Equal(s.Args, []string{"rev-parse", "HEAD", "--path-format=absolute", "--git-path", "shallow"}) {
+				t.Fatalf("unexpected git %v", s.Args)
+			}
+			return bytes.Replace(output, []byte("/recording/.git/"), []byte(dir+"/"), 1), nil
+		}}
+		got, ok := r.reclaimAncestryInputs(t.Context(), dir, "merged")
+		want := ancestryInputs{head: recordedHead, mergedHead: "merged", shallowRoots: recordedHead + "\n", hasShallowFile: true}
+		if !ok || got != want {
+			t.Fatalf("reclaimAncestryInputs = (%+v, %t), want (%+v, true)", got, ok, want)
+		}
+	})
+
+	t.Run("unshallow", func(t *testing.T) {
+		source := t.TempDir()
+		gitMergeTest(t, source, "init", "-b", "main")
+		gitMergeTest(t, source, "config", "user.name", "Test")
+		gitMergeTest(t, source, "config", "user.email", "test@example.test")
+		gitMergeTest(t, source, "commit", "--allow-empty", "-m", "A")
+		head := gitMergeTest(t, source, "rev-parse", "HEAD")
+		gitMergeTest(t, source, "branch", "at-a")
+		gitMergeTest(t, source, "commit", "--allow-empty", "-m", "B")
+		gitMergeTest(t, source, "commit", "--allow-empty", "-m", "C")
+		mergedHead := gitMergeTest(t, source, "rev-parse", "HEAD")
+
+		w := Workspace{Path: t.TempDir()}
+		gitMergeTest(t, source, "clone", "--depth=1", "--no-single-branch", "file://"+source, w.Path)
+		gitMergeTest(t, w.Path, "checkout", "--detach", head)
+		out, err := exec.Command("git", "-C", w.Path, "merge-base", "--is-ancestor", head, mergedHead).CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("shallow merge-base: want exit 1, got %v (%s)", err, out)
+		}
+
+		var mergeBase, revList int
+		r := &Runtime{Run: func(ctx context.Context, s runx.Spec) ([]byte, error) {
+			switch s.Args[0] {
+			case "merge-base":
+				mergeBase++
+			case "rev-list":
+				revList++
+			}
+			return runx.Run(ctx, s)
+		}}
+		check := func(wantMergeBase int) {
+			t.Helper()
+			blocks := r.reclaimBlocks(t.Context(), w, false, nil, nil, mergedHead, true)
+			if len(blocks) != 0 || mergeBase != wantMergeBase || revList != 1 {
+				t.Fatalf("blocks = %v, merge-base calls = %d, rev-list calls = %d; want [], %d, 1", blocks, mergeBase, revList, wantMergeBase)
+			}
+		}
+		check(1)
+		gitMergeTest(t, w.Path, "fetch", "--unshallow", "origin")
+		if got := gitMergeTest(t, w.Path, "rev-parse", "HEAD", "origin/main"); got != head+"\n"+mergedHead {
+			t.Fatalf("HEAD and origin/main after fetch = %q, want %s and %s", got, head, mergedHead)
+		}
+		gitMergeTest(t, w.Path, "merge-base", "--is-ancestor", head, mergedHead)
+		check(2)
+	})
+}
+
 // Terminal tickets lose every workspace, active tickets lose only superseded
 // resolver rounds, and each safety condition keeps a workspace with one WARN.
 func TestReclaimWorkspaces(t *testing.T) {
 	const merged = "1111111111111111111111111111111111111111"
+	const head = "2222222222222222222222222222222222222222"
 	ticket := func(id, state string) task.Issue {
 		return task.Issue{ID: id, Identifier: id, Project: task.NamedID{ID: "p"}, State: task.NamedID{Name: state}}
 	}
@@ -338,6 +461,7 @@ func TestReclaimWorkspaces(t *testing.T) {
 	}
 	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p"}}
 	r := &Runtime{Clients: map[string]issues.Store{"/repo": lc}, Repositories: map[string]config.Repository{"/repo": repo}, Workspaces: fake}
+	shallowPath := filepath.Join(t.TempDir(), "shallow")
 	r.Run = func(_ context.Context, s runx.Spec) ([]byte, error) {
 		name := filepath.Base(s.Dir)
 		switch s.Args[0] {
@@ -346,11 +470,15 @@ func TestReclaimWorkspaces(t *testing.T) {
 				return []byte(" M main.go\n"), nil
 			}
 			return nil, nil
+		case "rev-parse":
+			if slices.Equal(s.Args, []string{"rev-parse", "HEAD", "--path-format=absolute", "--git-path", "shallow"}) {
+				return []byte(head + "\n" + shallowPath + "\n"), nil
+			}
 		case "merge-base":
-			if (name == "OF-1-executor" || name == "OF-7-executor") && slices.Equal(s.Args[1:], []string{"--is-ancestor", "HEAD", merged}) {
+			if (name == "OF-1-executor" || name == "OF-7-executor") && slices.Equal(s.Args[1:], []string{"--is-ancestor", head, merged}) {
 				return nil, nil
 			}
-			return nil, errors.New("exit status 1")
+			return nil, gateExit{}
 		case "rev-list":
 			if name == "OF-3-executor" || name == "OF-1-executor" || name == "OF-7-executor" {
 				return []byte("1\n"), nil
