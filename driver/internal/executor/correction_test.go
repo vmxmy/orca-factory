@@ -27,10 +27,11 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 		{name: "primary available", wantCalls: []modelhealth.Ref{primary}},
 		{name: "primary weekly limit", unavailable: []modelhealth.Ref{primary}, wantCalls: []modelhealth.Ref{fallback}},
 		{name: "all unavailable", unavailable: []modelhealth.Ref{primary, fallback}},
-		{name: "session weekly limit retries with fallback", weeklyLimit: true, wantCalls: []modelhealth.Ref{primary, fallback}},
+		{name: "session weekly limit selects fallback next round", weeklyLimit: true, wantCalls: []modelhealth.Ref{primary, fallback}},
 		{name: "configured primary", primaryEnv: custom.String(), wantCalls: []modelhealth.Ref{custom}},
-		{name: "ordered configured fallbacks", fallbackEnv: fallback.String() + " " + custom.String(),
-			unavailable: []modelhealth.Ref{primary, fallback}, wantCalls: []modelhealth.Ref{custom}},
+		{name: "configured fallback", fallbackEnv: custom.String(), unavailable: []modelhealth.Ref{primary}, wantCalls: []modelhealth.Ref{custom}},
+		{name: "invalid primary uses default", primaryEnv: "invalid", wantCalls: []modelhealth.Ref{primary}},
+		{name: "invalid fallback uses default", fallbackEnv: "invalid", unavailable: []modelhealth.Ref{primary}, wantCalls: []modelhealth.Ref{fallback}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("AGENT_CORRECTION", tc.primaryEnv)
@@ -41,6 +42,9 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 				t.Fatal(err)
 			}
 			now := time.Now()
+			if err := registry.Record(modelhealth.Status{Ref: primary, State: modelhealth.OK, CheckedAt: now}); err != nil {
+				t.Fatal(err)
+			}
 			for _, ref := range tc.unavailable {
 				if err := registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}); err != nil {
 					t.Fatal(err)
@@ -49,10 +53,11 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			e, _, tools, _, _, ticket := recoveryFixture(t)
 			writeRole(t, e.Config.Repo, "correction.md", "CORRECTION ROLE\n")
 			var calls []runx.Spec
+			limitErr := errors.New("exit status 1")
 			commands := &Commands{StateRoot: state, Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
 				calls = append(calls, spec)
 				if tc.weeklyLimit && len(calls) == 1 {
-					return []byte("You've hit your weekly limit"), errors.New("exit status 1")
+					return []byte("You've hit your weekly limit"), limitErr
 				}
 				return nil, nil
 			}}
@@ -79,6 +84,13 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 				return
 			}
 			req := CorrectionRequest{Repo: e.Config.Repo, Path: filepath.Join(state, "correction.md"), Cause: "gate red", Number: 1}
+			if tc.weeklyLimit {
+				err := commands.Correction(context.Background(), req)
+				if !errors.Is(err, limitErr) || len(calls) != 1 {
+					t.Fatalf("first correction: err=%v calls=%d, want exit status 1 after one call", err, len(calls))
+				}
+				req.Number++
+			}
 			if err := commands.Correction(context.Background(), req); err != nil {
 				t.Fatal(err)
 			}
@@ -87,14 +99,14 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			}
 			for i, want := range tc.wantCalls {
 				spec := calls[i]
-				wantPath := want.Agent
 				mode, flags := "-p", map[string]string{"--model": want.Model, "--effort": want.Effort}
 				if want.Agent == "codex" {
-					wantPath = "orca"
-					mode, flags = "exec", map[string]string{"-m": want.Model, "-c": "model_reasoning_effort=" + want.Effort}
+					mode = "exec"
+					flags = map[string]string{"--model": want.Model, "-c": "model_reasoning_effort=" + want.Effort,
+						"--sandbox": "workspace-write", "--add-dir": filepath.Dir(req.Path)}
 				}
-				if spec.Path != wantPath || spec.Timeout != 10*time.Minute || spec.Dir != req.Repo {
-					t.Fatalf("call %d: path=%q want=%q timeout=%v dir=%q", i, spec.Path, wantPath, spec.Timeout, spec.Dir)
+				if spec.Path != want.Agent || spec.Timeout != 10*time.Minute || spec.Dir != req.Repo {
+					t.Fatalf("call %d: path=%q want=%q timeout=%v dir=%q", i, spec.Path, want.Agent, spec.Timeout, spec.Dir)
 				}
 				if len(spec.Args) == 0 || spec.Args[0] != mode || !strings.Contains(strings.Join(spec.Args, " "), req.Path) {
 					t.Errorf("expected %s and correction path in %q", mode, spec.Args)
@@ -141,6 +153,13 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 		}
 		if data, err := os.ReadFile(req.Path); err != nil || string(data) != verdict {
 			t.Fatalf("correction file = %q, err = %v", data, err)
+		}
+		registry, err := modelhealth.Open(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status := registry.Status(primary, time.Now()); status.State != modelhealth.Unavailable || status.Reason != "usage_limit" {
+			t.Errorf("primary after STALLED and weekly limit: %+v", status)
 		}
 	})
 }

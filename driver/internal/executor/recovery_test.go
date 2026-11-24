@@ -386,7 +386,7 @@ func TestCorrectionCommands(t *testing.T) {
 		t.Setenv(key, "test-hook-value")
 	}
 	t.Setenv("CORRECTION_TEST_ENV", "preserved")
-	t.Setenv("AGENT_CORRECTION", "claude:claude-opus-5-5:high")
+	t.Setenv("AGENT_CORRECTION", "")
 	t.Setenv("AGENT_CORRECTION_FALLBACK", "")
 	c := Commands{Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
 		if s.Path != "claude" || len(s.Args) != 14 || s.Args[0] != "-p" || !strings.Contains(s.Args[1], target) || s.Timeout != 10*time.Minute || s.Dir != repo {

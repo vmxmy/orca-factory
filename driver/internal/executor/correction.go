@@ -41,21 +41,32 @@ func (e *Executor) recovery() Recovery {
 	}
 	return nil
 }
+
+func correctionPrimary() modelhealth.Ref {
+	if ref, err := modelhealth.Parse(os.Getenv("AGENT_CORRECTION")); err == nil {
+		return ref
+	}
+	return modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
+}
+
+func correctionFallbackModel() modelhealth.Ref {
+	if ref, err := modelhealth.Parse(os.Getenv("AGENT_CORRECTION_FALLBACK")); err == nil {
+		return ref
+	}
+	return modelhealth.Ref{Agent: "codex", Model: "gpt-6.2-astra", Effort: "high"}
+}
+
 func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error {
 	role, err := readRole(req.Repo, "correction.md")
 	if err != nil {
 		return err
 	}
 	prompt := fmt.Sprintf("%s\n\nCorrection file: %q\nCorrection: %d/3\nFailure: %s\nBrief:\n%s", role, req.Path, req.Number, req.Cause, req.Brief)
-	candidates, err := correctionCandidates()
-	if err != nil {
-		return err
-	}
-	ref := candidates[0]
+	ref := correctionPrimary()
 	if c.StateRoot != "" {
 		if registry, err := modelhealth.Open(c.StateRoot); err == nil {
 			var ok bool
-			if ref, ok = registry.Select(candidates, time.Now()); !ok {
+			if ref, ok = registry.Select([]modelhealth.Ref{ref, correctionFallbackModel()}, time.Now()); !ok {
 				return errors.New("all correction model candidates unavailable")
 			}
 		}
@@ -70,50 +81,28 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 		}
 		env = append(env, entry)
 	}
-	const timeout = 10 * time.Minute
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	for {
-		spec := runx.Spec{Path: ref.Agent, Dir: req.Repo, Env: env, Timeout: timeout}
-		switch ref.Agent {
-		case "claude":
-			spec.Args = []string{"-p", prompt, "--model", ref.Model, "--effort", ref.Effort,
-				"--permission-mode", "acceptEdits", "--add-dir", filepath.Dir(req.Path),
-				"--allowedTools", "Read,Grep,Glob,Write,Edit", "--tools", "Read,Grep,Glob,Write,Edit"}
-		case "codex":
-			spec.Path = "orca"
-			spec.Args = []string{"exec", "-m", ref.Model, "-c", "model_reasoning_effort=" + ref.Effort, "--ephemeral", prompt}
-		default:
-			return errors.New("correction agent must be claude or codex")
-		}
-		output, err := c.runSpec(ctx, spec)
-		if err == nil {
-			return nil
-		}
-		if data, readErr := os.ReadFile(req.Path); readErr == nil {
-			if _, stalled := stallVerdict(data); stalled {
-				return err
-			}
-		}
-		next, retry, recordErr := config.RetryAfterModelError(c.StateRoot, ref, candidates, output, err, time.Now())
-		if !retry {
-			return errors.Join(err, recordErr)
-		}
-		ref, candidates = next, nil // Record a failed retry without launching a third session.
+	spec := runx.Spec{Path: ref.Agent, Dir: req.Repo, Env: env, Timeout: 10 * time.Minute}
+	switch ref.Agent {
+	case "claude":
+		spec.Args = []string{"-p", prompt, "--model", ref.Model, "--effort", ref.Effort,
+			"--permission-mode", "acceptEdits", "--add-dir", filepath.Dir(req.Path),
+			"--allowedTools", "Read,Grep,Glob,Write,Edit", "--tools", "Read,Grep,Glob,Write,Edit"}
+	case "codex":
+		spec.Args = []string{"exec", "--model", ref.Model, "-c", "model_reasoning_effort=" + ref.Effort,
+			"--sandbox", "workspace-write", "--add-dir", filepath.Dir(req.Path), "--ephemeral", prompt}
+	default:
+		return errors.New("correction agent must be claude or codex")
 	}
+	output, err := c.runSpec(ctx, spec)
+	if err == nil {
+		return nil
+	}
+	if _, _, recordErr := config.RetryAfterModelError(c.StateRoot, ref, nil, output, err, time.Now()); recordErr != nil {
+		runx.LoggerFrom(ctx).Warn("correction model error not recorded", "err", recordErr)
+	}
+	return err
 }
 
-func correctionCandidates() ([]modelhealth.Ref, error) {
-	primary, err := modelhealth.Parse(cmp.Or(os.Getenv("AGENT_CORRECTION"), "claude:claude-opus-5-5:high"))
-	if err != nil {
-		return nil, fmt.Errorf("AGENT_CORRECTION: %w", err)
-	}
-	fallbacks, err := config.ParseFallback(cmp.Or(os.Getenv("AGENT_CORRECTION_FALLBACK"), "codex:gpt-6.2-astra:high"))
-	if err != nil {
-		return nil, fmt.Errorf("AGENT_CORRECTION_FALLBACK: %w", err)
-	}
-	return append([]modelhealth.Ref{primary}, fallbacks...), nil
-}
 func (c *Commands) orcaCall(ctx context.Context, args ...string) (orca.Receipt, error) {
 	path, err := runx.OrcaPath()
 	if err != nil {

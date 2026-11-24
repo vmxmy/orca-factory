@@ -516,16 +516,16 @@ Driver 在本轮回收前列出全部受管仓库的 driver 工作区。解析�
 
 ## 模型兜底选择（OF-593）
 
-correction 会话读取执行器的两个环境变量。未设置或为空时使用表中默认值。
+执行器从下面两个环境变量读取 correction 模型。变量为空或值无法解析时，使用该变量的默认值。
 
 | 环境变量 | 格式 | 默认值 |
 | --- | --- | --- |
 | `AGENT_CORRECTION` | 主选 `agent:model:effort` | `claude:claude-opus-5-5:high` |
-| `AGENT_CORRECTION_FALLBACK` | 空格分隔的有序候选列表，每项为 `agent:model:effort` | `codex:gpt-6.2-astra:high` |
+| `AGENT_CORRECTION_FALLBACK` | 兜底 `agent:model:effort` | `codex:gpt-6.2-astra:high` |
 
-`Commands.Correction` 从主选开始查登记，使用第一个未在冷却的模型。Claude 用 `claude -p` 的 `--model` 和 `--effort` 接收所选档位。选中 Codex 时，执行器调用 `orca exec -m <model> -c model_reasoning_effort=<effort> --ephemeral`，最后一个参数是提示词。
+`Commands.Correction` 先查主选的冷却状态，再决定是否用兜底。Claude 通过 `claude -p` 的 `--model` 和 `--effort` 接收配置。Codex 通过 `codex exec --model <model> -c model_reasoning_effort=<effort>` 接收配置，`--add-dir` 授予 correction 文件所在目录的写权限。Orca CLI 的 `orca exec --command` 用于操作当前浏览器标签页。
 
-会话报错退出时，执行器先检查 correction 文件的第一个非空行。已有 `STALLED:` 判定时按停滞规则处理，否则按命令输出登记模型错误，并在本轮内最多换一个可用候选。启动前所有候选都在冷却时，执行器按 OF-661 把失败原因及已有的失败摘要写进子任务简报。见 `TestCorrectionSessionSelectsModelFromRegistry`。
+每轮最多启动一个会话，时限为十分钟。命令非零退出时，执行器按输出登记周限额等模型错误，即使会话已写出 `STALLED:` 判定也会登记。下一轮按最新登记选模型。若主选和兜底都在冷却，执行器按 OF-661 把失败原因及已有的失败摘要写进子任务简报。见 `TestCorrectionSessionSelectsModelFromRegistry`。
 
 - `config.ParseFallback` 解析 `<键名>_FALLBACK`：空格分隔、有序的 `agent:model:effort` 列表，每项按 `modelhealth.Parse` 校验；空值表示没有兜底。错误只给出键名与候选序号，不含配置值（`TestFallbackKeysParse`）。施工与处置选中 model 为空的候选时用 agent 默认模型且不传 effort，与配置档位相同；需求助手、接入 Agent 与审查按候选原样传参。终审选中不完整的候选时按终审档位无效转人。
 - `config.SelectModel` 在有兜底时打开状态根目录的 `model-health.json`，用 `Registry.Select` 在「主选 + 兜底」中取第一个未在冷却的候选；全部冷却时返回主选。没有兜底时不读登记。登记读取失败时返回主选和错误，调用方记 warn 日志后按主选继续。
