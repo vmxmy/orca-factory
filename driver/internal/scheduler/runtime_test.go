@@ -813,11 +813,16 @@ func TestMergeCorrectionRejectsChangedReservation(t *testing.T) {
 			}}
 			err := rt.mergeDecision(context.Background(), ticket, strings.Repeat("c", 40), merge.Result{Status: merge.Correction, Corrections: 1, Reason: "gate failed"})
 			want := errReservationChanged
-			if change == "handoff" || change == "progress" || change == "resolver" {
+			wantLaunches := 0
+			switch change {
+			case "progress":
+				want = nil
+				wantLaunches = 1
+			case "handoff", "resolver":
 				want = errLaunchEvidenceChanged
 			}
-			if !raced || !errors.Is(err, want) || len(oc.launches) != 0 || len(client.comments) != 2 {
-				t.Fatalf("race ignored or retried: raced=%v error=%v launches=%v writes=%v", raced, err, oc.launches, client.comments)
+			if !raced || !errors.Is(err, want) || len(oc.launches) != wantLaunches || len(client.comments) != 2 {
+				t.Fatalf("reservation race: raced=%v error=%v want=%v launches=%v wantLaunches=%d writes=%v", raced, err, want, oc.launches, wantLaunches, client.comments)
 			}
 		})
 	}
