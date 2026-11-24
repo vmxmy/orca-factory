@@ -12,6 +12,8 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
+const autoScopeLimit = 4
+
 // ScopeLedger is the ledger access needed to approve a scope extension.
 type ScopeLedger interface {
 	Read(context.Context, string) (issues.Task, error)
@@ -129,7 +131,7 @@ func autoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attemp
 	if refusal != "" {
 		return refusal, nil
 	}
-	conditions := fmt.Sprintf("AGENT_AUTO_REVIEW=%s；字面路径校验通过；%d 个路径不超过 10；不命中 lane 3 或控制文件；本票第 %d 次自动批准，不超过 2 次", flag, len(paths), approvals+1)
+	conditions := fmt.Sprintf("AGENT_AUTO_REVIEW=%s；字面路径校验通过；%d 个路径不超过 10；不命中 lane 3 或控制文件；本票第 %d 次自动批准，不超过 %d 次", flag, len(paths), approvals+1, autoScopeLimit)
 	body := fmt.Sprintf("扩SCOPE：%s %s\n条件：%s", sender, now.Format(time.RFC3339), conditions)
 	return applyScopeReview(ctx, ledger, ticket, record, paths, body)
 }
@@ -182,8 +184,8 @@ func autoScopeApproval(paths []string, comments []task.Comment, lane3Globs strin
 			approvals++
 		}
 	}
-	if approvals >= 2 {
-		return 0, "每张票自动批准已达 2 次"
+	if approvals >= autoScopeLimit {
+		return 0, fmt.Sprintf("每张票自动批准已达 %d 次", autoScopeLimit)
 	}
 	return approvals, ""
 }
@@ -206,6 +208,6 @@ func AutoApproveWorkerScope(ctx context.Context, ledger ScopeLedger, id string, 
 	if refusal != "" {
 		return false, nil
 	}
-	audit := fmt.Sprintf("%s%s\n条件：AGENT_MODE=auto；字面路径校验通过；%d 个路径不超过 10；不命中 lane 3 或控制文件；本票第 %d 次自动批准，不超过 2 次\n路径：%s", workerAutoScopePrefix, now.Format(time.RFC3339), len(paths), approvals+1, strings.Join(paths, " "))
+	audit := fmt.Sprintf("%s%s\n条件：AGENT_MODE=auto；字面路径校验通过；%d 个路径不超过 10；不命中 lane 3 或控制文件；本票第 %d 次自动批准，不超过 %d 次\n路径：%s", workerAutoScopePrefix, now.Format(time.RFC3339), len(paths), approvals+1, autoScopeLimit, strings.Join(paths, " "))
 	return applyWorkerScope(ctx, ledger, ticket.Metadata.ID, ticket.Description, paths, audit)
 }

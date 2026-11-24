@@ -116,7 +116,7 @@ func TestAutoModeScopeRequestApprovedBeforeTop(t *testing.T) {
 		previous int
 	}{
 		{name: "approved before top"},
-		{name: "approval limit enters top", previous: 2},
+		{name: "approval limit enters top", previous: 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: 3, Phase: "result", Outcome: "failed", Result: string(decision)})
@@ -136,7 +136,7 @@ func TestAutoModeScopeRequestApprovedBeforeTop(t *testing.T) {
 				t.Fatal(err)
 			}
 			after := fromEvidence(t, ticket, store.issueComments)
-			if tc.previous == 2 {
+			if tc.previous == 4 {
 				if len(store.comments) != 1 || !strings.Contains(store.comments[0], "终审处置") || !after.Resolution.Top || !after.Resolution.TopUsed {
 					t.Fatalf("approval limit did not enter top: comments=%q resolution=%+v", store.comments, after.Resolution)
 				}

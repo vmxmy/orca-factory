@@ -15,6 +15,37 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
+func TestAutoScopeApprovalLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		history []task.Comment
+		refusal string
+	}{
+		{name: "fourth approval across stages", history: []task.Comment{{Body: "扩SCOPE：auto old"}, {Body: "扩SCOPE：top-resolver old"}, {Body: "扩SCOPE：worker-auto old"}}},
+		{name: "four approvals exhausted", history: []task.Comment{{Body: "扩SCOPE：auto old"}, {Body: "扩SCOPE：top-resolver old"}, {Body: "扩SCOPE：worker-auto old"}, {Body: "扩SCOPE：auto newer"}}, refusal: "每张票自动批准已达 4 次"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := scopedTicket(t, `{"action":"escalate","class":"scope-extension","reason":"scope","body":"proof","scope":["new.go"]}`)
+			ledger := &humanLedger{fakeLedger: h.ledger, comments: tc.history}
+			before := h.ledger.tasks[0].Description
+			refusal, err := AutoApproveScope(context.Background(), ledger, "OF-12", 7, "", h.g.now())
+			if err != nil || refusal != tc.refusal {
+				t.Fatalf("refusal=%q want=%q err=%v", refusal, tc.refusal, err)
+			}
+			events := h.ledger.events["canon-of12"]
+			if tc.refusal != "" {
+				if h.ledger.tasks[0].Description != before || len(h.ledger.edits) != 0 || len(events) != 1 {
+					t.Fatalf("refusal changed ticket: edits=%q events=%q", h.ledger.edits, events)
+				}
+				return
+			}
+			if len(h.ledger.edits) != 1 || !strings.Contains(h.ledger.tasks[0].Description, "a.go b.go new.go") || len(events) != 2 || !strings.Contains(events[1], "本票第 4 次自动批准，不超过 4 次") {
+				t.Fatalf("fourth approval missing: edits=%q events=%q", h.ledger.edits, events)
+			}
+		})
+	}
+}
+
 func TestAutoScopePersistsLimitAndRetries(t *testing.T) {
 	h := scopedTicket(t, `{"action":"escalate","class":"scope-extension","reason":"scope","body":"proof","scope":["new.go"]}`)
 	ledger := &humanLedger{fakeLedger: h.ledger, commentErr: errors.New("comment unavailable")}
@@ -113,7 +144,7 @@ func TestRecordedAutoScopeApprovalCount(t *testing.T) {
 	}{
 		{name: "recorded human receipts", history: []task.Comment{receipt, receipt}, approved: "第 1 次"},
 		{name: "one auto receipt", history: []task.Comment{receipt, auto}, approved: "第 2 次"},
-		{name: "two auto receipts", history: []task.Comment{auto, auto}},
+		{name: "four auto receipts", history: []task.Comment{auto, auto, auto, auto}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := scopedTicket(t, `{"action":"escalate","class":"scope-extension","reason":"scope","body":"proof","scope":["new.go"]}`)
@@ -127,13 +158,13 @@ func TestRecordedAutoScopeApprovalCount(t *testing.T) {
 			}
 			events := h.ledger.events["canon-of12"]
 			if tc.approved == "" {
-				if refusal != "每张票自动批准已达 2 次" || len(h.ledger.edits) != 0 || len(events) != 0 {
+				if refusal != "每张票自动批准已达 4 次" || len(h.ledger.edits) != 0 || len(events) != 0 {
 					t.Fatalf("refusal=%q edits=%q events=%q", refusal, h.ledger.edits, events)
 				}
 				return
 			}
 			wantFace := "## 要做\nx\n\n## LANE 预判\n2\n\n## SCOPE\na.go b.go new.go\n\n## 依赖\nDEPENDENCIES: {}"
-			want := "扩SCOPE：auto 2026-11-01T12:00:00Z\n条件：AGENT_AUTO_REVIEW=scope；字面路径校验通过；1 个路径不超过 10；不命中 lane 3 或控制文件；本票" + tc.approved + "自动批准，不超过 2 次\n路径：new.go\n" + waitingReceipt
+			want := "扩SCOPE：auto 2026-11-01T12:00:00Z\n条件：AGENT_AUTO_REVIEW=scope；字面路径校验通过；1 个路径不超过 10；不命中 lane 3 或控制文件；本票" + tc.approved + "自动批准，不超过 4 次\n路径：new.go\n" + waitingReceipt
 			if refusal != "" || len(h.ledger.edits) != 1 || h.ledger.edits[0] != wantFace || len(events) != 1 || events[0] != want {
 				t.Fatalf("refusal=%q edits=%q events=%q", refusal, h.ledger.edits, events)
 			}
