@@ -365,6 +365,29 @@ func TestReclaimIsAncestorCache(t *testing.T) {
 		t.Fatalf("empty merged head ran rev-parse %d times", revParse-beforeEmpty)
 	}
 
+	t.Run("recorded rev-parse", func(t *testing.T) {
+		output, err := os.ReadFile("../../testdata/recorded/git-rev-parse-head-shallow.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		const recordedHead = "4b48451bf7c29cbd0092051ff52ad42119cd2d3c"
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "shallow"), []byte(recordedHead+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		r := &Runtime{Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+			if !slices.Equal(s.Args, []string{"rev-parse", "HEAD", "--path-format=absolute", "--git-path", "shallow"}) {
+				t.Fatalf("unexpected git %v", s.Args)
+			}
+			return bytes.Replace(output, []byte("/recording/.git/"), []byte(dir+"/"), 1), nil
+		}}
+		got, ok := r.reclaimAncestryInputs(t.Context(), dir, "merged")
+		want := ancestryInputs{head: recordedHead, mergedHead: "merged", shallowRoots: recordedHead + "\n", hasShallowFile: true}
+		if !ok || got != want {
+			t.Fatalf("reclaimAncestryInputs = (%+v, %t), want (%+v, true)", got, ok, want)
+		}
+	})
+
 	t.Run("unshallow", func(t *testing.T) {
 		source := t.TempDir()
 		gitMergeTest(t, source, "init", "-b", "main")
