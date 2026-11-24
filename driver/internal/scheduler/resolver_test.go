@@ -28,6 +28,114 @@ import (
 	"unicode/utf8"
 )
 
+type unavailableDescriptionStore struct {
+	*autoModeScopeStore
+	descriptionCalls int
+}
+
+func (s *unavailableDescriptionStore) Description(context.Context, string) (string, error) {
+	s.descriptionCalls++
+	return "", errors.New("description unavailable")
+}
+
+func TestResolverScopeAutoApproveWithExplicitAutoReview(t *testing.T) {
+	const face = "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go\n"
+	newStore := func(t *testing.T, proposal string) *autoModeScopeStore {
+		t.Helper()
+		decision := recorded(t, proposal)
+		raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: 3, Phase: "result", Outcome: "failed", Result: string(decision)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &autoModeScopeStore{labelStore: labelStore{fakeIssues: fakeIssues{
+			description:   face,
+			issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", resolver.Prefix+string(raw)),
+		}}}
+	}
+	assertTopWaiting := func(t *testing.T, store *autoModeScopeStore, ticket Ticket) {
+		t.Helper()
+		after := fromEvidence(t, ticket, store.issueComments)
+		if len(store.comments) != 1 || !strings.HasPrefix(store.comments[0], "Agent处置: 终审处置\n") ||
+			after.Owner != machine.OwnerResolver || after.Resolution.Phase != "waiting" || !after.Resolution.Top || !after.Resolution.TopUsed {
+			t.Fatalf("expected final review: comments=%q resolution=%+v owner=%s", store.comments, after.Resolution, after.Owner)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		review  string
+		mode    string
+		approve bool
+	}{
+		{name: "top", review: "top", approve: true},
+		{name: "scope", review: "scope", approve: true},
+		{name: "default"},
+		{name: "auto", mode: "auto", approve: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t, "resolver-escalate-scope.json")
+			r := modeRuntime(store, map[string]string{"AGENT_AUTO_REVIEW": tc.review, "AGENT_MODE": tc.mode})
+			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo"}, store.issueComments)
+			if err := r.applyResolution(context.Background(), ticket); err != nil {
+				t.Fatal(err)
+			}
+			after := fromEvidence(t, ticket, store.issueComments)
+			if len(store.comments) != 1 {
+				t.Fatalf("expected one resolution receipt: %q", store.comments)
+			}
+			if after.Resolution.Top || after.Resolution.TopUsed {
+				t.Fatalf("scope request consumed final review: %+v", after.Resolution)
+			}
+			if tc.approve {
+				if !strings.HasPrefix(store.comments[0], "扩SCOPE：auto ") || after.Owner != machine.OwnerResolver || after.Resolution.Phase != "waiting" {
+					t.Fatalf("scope not automatically approved: comments=%q resolution=%+v owner=%s", store.comments, after.Resolution, after.Owner)
+				}
+				if store.description != "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go scripts/module-size-metric-report.test.mjs\n" {
+					t.Fatalf("scope face=%q", store.description)
+				}
+			} else if store.description != face || !strings.HasPrefix(store.comments[0], "转人: ") || after.Owner != machine.OwnerHuman || after.Resolution.Phase != "human" {
+				t.Fatalf("default manual handling changed: face=%q comments=%q resolution=%+v owner=%s", store.description, store.comments, after.Resolution, after.Owner)
+			}
+		})
+	}
+
+	for _, review := range []string{"top", "scope"} {
+		t.Run(review+" with conflicting handoff", func(t *testing.T) {
+			store := newStore(t, "resolver-escalate-scope.json")
+			r := modeRuntime(store, map[string]string{"AGENT_AUTO_REVIEW": review})
+			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo"}, store.issueComments)
+			ticket.MergeProblem = "conflicting handoff"
+			if err := r.escalateResolution(context.Background(), ticket, ticket.Resolution, "conflicting handoff", "scope request"); err != nil {
+				t.Fatal(err)
+			}
+			if store.description != face || slices.Contains(store.add, parkedLabel) {
+				t.Errorf("conflicting scope request changed ticket: face=%q labels=%q comments=%q", store.description, store.add, store.comments)
+			}
+			if review == "top" {
+				assertTopWaiting(t, store, ticket)
+				return
+			}
+			after := fromEvidence(t, ticket, store.issueComments)
+			if len(store.comments) != 1 || !strings.HasPrefix(store.comments[0], "转人: ") || after.Owner != machine.OwnerHuman ||
+				after.Resolution.Phase != "human" || after.Resolution.Top || after.Resolution.TopUsed {
+				t.Fatalf("expected human handoff: comments=%q resolution=%+v owner=%s", store.comments, after.Resolution, after.Owner)
+			}
+		})
+	}
+
+	t.Run("top without scope request", func(t *testing.T) {
+		store := &unavailableDescriptionStore{autoModeScopeStore: newStore(t, "resolver-escalate-other.json")}
+		r := modeRuntime(store, map[string]string{"AGENT_AUTO_REVIEW": "top"})
+		ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo"}, store.issueComments)
+		if err := r.applyResolution(context.Background(), ticket); err != nil {
+			t.Error(err)
+		}
+		if store.descriptionCalls != 0 {
+			t.Errorf("Description called %d times without a scope request", store.descriptionCalls)
+		}
+		assertTopWaiting(t, store.autoModeScopeStore, ticket)
+	})
+}
+
 func TestHumanTicketDispatchesResolver(t *testing.T) {
 	f := &fakeBackend{tickets: []Ticket{{ID: "id", Identifier: "ENG-1", Repo: "a", Owner: machine.OwnerHuman, Phase: machine.PhaseHuman, Attempt: 2}}}
 	s := setup(f)

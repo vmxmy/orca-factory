@@ -639,15 +639,17 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 	if err == nil && decision.Action == "escalate" {
 		class = decision.Class
 	}
-	if autoMode(env) {
+	auto := autoMode(env)
+	scopeRequest := !p.Top && len(decision.ScopeRequest()) > 0
+	if auto || scopeRequest && (explicitAutoReview(env, "scope") || explicitAutoReview(env, "top")) {
 		human, err := r.mustHuman(ctx, t, class)
 		if err != nil {
 			return err
 		}
-		if human {
+		if human && auto {
 			return r.parkResolution(ctx, t, p, reason, evidence)
 		}
-		if !p.Top && len(decision.ScopeRequest()) > 0 {
+		if !human && scopeRequest {
 			now := time.Now()
 			if r.Now != nil {
 				now = r.Now()
@@ -670,7 +672,7 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 		}
 		return r.mergeComment(ctx, t, "Agent处置: 终审处置\n阶段: Agent处置\n归属: 处置Agent\n"+resolver.Prefix+string(raw))
 	}
-	if autoMode(env) {
+	if auto {
 		return r.parkResolution(ctx, t, p, reason, evidence)
 	}
 	next.Phase, next.Outcome = "human", "failed"
