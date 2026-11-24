@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,10 +23,11 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 	for _, tc := range []struct {
 		name, primaryEnv, fallbackEnv string
 		unavailable, wantCalls        []modelhealth.Ref
-		weeklyLimit                   bool
+		weeklyLimit, brokenRegistry   bool
 	}{
 		{name: "primary available", wantCalls: []modelhealth.Ref{primary}},
 		{name: "primary weekly limit", unavailable: []modelhealth.Ref{primary}, wantCalls: []modelhealth.Ref{fallback}},
+		{name: "unreadable registry", brokenRegistry: true},
 		{name: "all unavailable", unavailable: []modelhealth.Ref{primary, fallback}},
 		{name: "session weekly limit selects fallback next round", weeklyLimit: true, wantCalls: []modelhealth.Ref{primary, fallback}},
 		{name: "configured primary", primaryEnv: custom.String(), wantCalls: []modelhealth.Ref{custom}},
@@ -47,6 +49,11 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			}
 			for _, ref := range tc.unavailable {
 				if err := registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.brokenRegistry {
+				if err := os.WriteFile(filepath.Join(state, "model-health.json"), []byte("{"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -101,6 +108,10 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 				spec := calls[i]
 				mode, flags := "-p", map[string]string{"--model": want.Model, "--effort": want.Effort}
 				if want.Agent == "codex" {
+					if spec.Path != "/bin/sh" || len(spec.Args) < 5 {
+						t.Fatalf("missing stdin wrapper in %+v", spec.Args)
+					}
+					spec.Path, spec.Args = spec.Args[3], spec.Args[4:]
 					mode = "exec"
 					flags = map[string]string{"--model": want.Model, "-c": "model_reasoning_effort=" + want.Effort,
 						"--sandbox": "workspace-write", "--add-dir": filepath.Dir(req.Path)}
@@ -108,7 +119,7 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 				if spec.Path != want.Agent || spec.Timeout != 10*time.Minute || spec.Dir != req.Repo {
 					t.Fatalf("call %d: path=%q want=%q timeout=%v dir=%q", i, spec.Path, want.Agent, spec.Timeout, spec.Dir)
 				}
-				if len(spec.Args) == 0 || spec.Args[0] != mode || !strings.Contains(strings.Join(spec.Args, " "), req.Path) {
+				if len(spec.Args) == 0 || spec.Args[0] != mode || (want.Agent == "claude" && !strings.Contains(strings.Join(spec.Args, " "), req.Path)) {
 					t.Errorf("expected %s and correction path in %q", mode, spec.Args)
 				}
 				for flag, value := range flags {
@@ -129,6 +140,31 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			}
 		})
 	}
+	t.Run("codex receives prompt on stdin", func(t *testing.T) {
+		t.Setenv("AGENT_CORRECTION", fallback.String())
+		repo, state := t.TempDir(), t.TempDir()
+		req := CorrectionRequest{Repo: repo, Path: filepath.Join(state, "correction.md"), Number: 1, Cause: "gate red", Brief: "first line\n$(exit 91) 'second line'"}
+		writeRole(t, repo, "correction.md", "CORRECTION ROLE\n")
+		probe := []byte("#!/bin/sh\ncat > \"$CAPTURE\"\n")
+		if err := os.WriteFile(filepath.Join(repo, "codex"), probe, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", repo+string(os.PathListSeparator)+os.Getenv("PATH"))
+		capture := filepath.Join(state, "stdin")
+		t.Setenv("CAPTURE", capture)
+		commands := Commands{StateRoot: state}
+		if err := commands.Correction(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+		input, err := os.ReadFile(capture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("CORRECTION ROLE\n\nCorrection file: %q\nCorrection: 1/3\nFailure: gate red\nBrief:\n%s", req.Path, req.Brief)
+		if string(input) != want {
+			t.Fatalf("Codex stdin = %q, want %q", input, want)
+		}
+	})
 	t.Run("stalled before weekly limit", func(t *testing.T) {
 		t.Setenv("AGENT_CORRECTION", primary.String())
 		t.Setenv("AGENT_CORRECTION_FALLBACK", fallback.String())

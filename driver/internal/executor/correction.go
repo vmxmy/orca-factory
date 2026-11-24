@@ -64,11 +64,13 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 	prompt := fmt.Sprintf("%s\n\nCorrection file: %q\nCorrection: %d/3\nFailure: %s\nBrief:\n%s", role, req.Path, req.Number, req.Cause, req.Brief)
 	ref := correctionPrimary()
 	if c.StateRoot != "" {
-		if registry, err := modelhealth.Open(c.StateRoot); err == nil {
-			var ok bool
-			if ref, ok = registry.Select([]modelhealth.Ref{ref, correctionFallbackModel()}, time.Now()); !ok {
-				return errors.New("all correction model candidates unavailable")
-			}
+		registry, err := modelhealth.Open(c.StateRoot)
+		if err != nil {
+			return fmt.Errorf("correction model registry: %w", err)
+		}
+		var ok bool
+		if ref, ok = registry.Select([]modelhealth.Ref{ref, correctionFallbackModel()}, time.Now()); !ok {
+			return errors.New("all correction model candidates unavailable")
 		}
 	}
 	// A coordinator subprocess must not inherit this worker's Orca hooks.
@@ -88,8 +90,18 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 			"--permission-mode", "acceptEdits", "--add-dir", filepath.Dir(req.Path),
 			"--allowedTools", "Read,Grep,Glob,Write,Edit", "--tools", "Read,Grep,Glob,Write,Edit"}
 	case "codex":
-		spec.Args = []string{"exec", "--model", ref.Model, "-c", "model_reasoning_effort=" + ref.Effort,
-			"--sandbox", "workspace-write", "--add-dir", filepath.Dir(req.Path), "--ephemeral", prompt}
+		dir, err := os.MkdirTemp("", "correction-input-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		input := filepath.Join(dir, "prompt")
+		if err := os.WriteFile(input, []byte(prompt), 0o600); err != nil {
+			return err
+		}
+		spec.Path = "/bin/sh"
+		spec.Args = []string{"-c", `exec "$@" < "$0"`, input, "codex", "exec", "--model", ref.Model, "-c", "model_reasoning_effort=" + ref.Effort,
+			"--sandbox", "workspace-write", "--add-dir", filepath.Dir(req.Path), "--ephemeral", "-"}
 	default:
 		return errors.New("correction agent must be claude or codex")
 	}
