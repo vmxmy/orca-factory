@@ -920,6 +920,64 @@ func TestSelfDeployDoesNotDowngradeInstalledDriver(t *testing.T) {
 	}
 }
 
+func TestRunningContainsWithMissingLocalObject(t *testing.T) {
+	exitError := func(code int) error {
+		t.Helper()
+		_, err := exec.Command("sh", "-c", fmt.Sprintf("echo 'Not a valid object name' >&2; exit %d", code)).Output()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != code {
+			t.Fatalf("exit %d fixture: %v", code, err)
+		}
+		return err
+	}
+	missing, notAncestor := exitError(128), exitError(1)
+	const sha = "squash"
+	const mergeBase = "merge-base --is-ancestor squash running"
+	const fetch = "fetch origin squash"
+	for _, tc := range []struct {
+		name     string
+		version  string
+		commands []string
+		errors   []error
+		want     bool
+		wantInfo bool
+	}{
+		{name: "fetch then ancestor", version: "running", commands: []string{mergeBase, fetch, mergeBase}, errors: []error{missing, nil, nil}, want: true},
+		{name: "fetch fails", version: "running", commands: []string{mergeBase, fetch}, errors: []error{missing, errors.New("fetch failed")}, wantInfo: true},
+		{name: "object still missing after fetch", version: "running", commands: []string{mergeBase, fetch, mergeBase}, errors: []error{missing, nil, missing}, wantInfo: true},
+		{name: "not ancestor after fetch", version: "running", commands: []string{mergeBase, fetch, mergeBase}, errors: []error{missing, nil, notAncestor}},
+		{name: "not ancestor", version: "running", commands: []string{mergeBase}, errors: []error{notAncestor}},
+		{name: "same version", version: sha, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs strings.Builder
+			ctx := runx.WithLogger(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)))
+			repo := t.TempDir()
+			calls := 0
+			r := &Runtime{Version: tc.version, Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+				if calls >= len(tc.commands) {
+					t.Fatalf("unexpected command: %s %v", s.Path, s.Args)
+				}
+				if s.Path != "git" || strings.Join(s.Args, " ") != tc.commands[calls] || s.Dir != repo || s.Timeout != time.Minute {
+					t.Fatalf("command %d: got %+v, want git %s in %s with a one-minute timeout", calls, s, tc.commands[calls], repo)
+				}
+				err := tc.errors[calls]
+				calls++
+				return nil, err
+			}}
+			if got := r.runningContains(ctx, repo, sha); got != tc.want {
+				t.Errorf("runningContains = %t, want %t", got, tc.want)
+			}
+			if calls != len(tc.commands) {
+				t.Errorf("commands = %d, want %d", calls, len(tc.commands))
+			}
+			if strings.Contains(logs.String(), "level=WARN") || strings.Contains(logs.String(), "level=INFO") != tc.wantInfo {
+				t.Errorf("want INFO=%t and no WARN, got logs: %s", tc.wantInfo, logs.String())
+			}
+		})
+	}
+}
+
 func TestSelfDeployConfirmPassedAfterRollbackRequiresInstalledVersion(t *testing.T) {
 	for _, running := range []string{"old", "", "unknown", "exact", "short", "descendant"} {
 		for _, dry := range []bool{true, false} {
