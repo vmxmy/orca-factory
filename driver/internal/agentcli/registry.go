@@ -18,11 +18,14 @@ type Profile struct {
 	CorrectionArgs []string `toml:"correction_args"`
 	Relay          bool     `toml:"relay"`
 	reviewPrefix   string
+	unquotedModel  *regexp.Regexp
 }
 
-var builtins = map[string]Profile{
+// registered holds built-in and programmatic profiles across machine config reloads.
+var registered = map[string]Profile{
 	"claude": {
 		Name: "claude", Relay: true,
+		unquotedModel:  regexp.MustCompile(`^[A-Za-z0-9._/@+-]+\[1m\]$`),
 		ProbeArgs:      []string{"-p", "--model", "{model}", "--tools", "", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"},
 		ReviewArgs:     strings.Fields("-p --model {model} --effort {effort} --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"),
 		CorrectionArgs: strings.Fields("-p {prompt} --model {model} --effort {effort} --permission-mode acceptEdits --add-dir {dir} --allowedTools Read,Grep,Glob,Write,Edit --tools Read,Grep,Glob,Write,Edit"),
@@ -36,7 +39,7 @@ var builtins = map[string]Profile{
 }
 
 var mu sync.RWMutex
-var profiles = maps.Clone(builtins)
+var profiles = maps.Clone(registered)
 
 func (p Profile) clone() Profile {
 	p.ProbeArgs = slices.Clone(p.ProbeArgs)
@@ -48,18 +51,19 @@ func (p Profile) clone() Profile {
 func Register(p Profile) {
 	mu.Lock()
 	defer mu.Unlock()
-	profiles[p.Name] = p.clone()
+	registered[p.Name] = p.clone()
+	profiles[p.Name] = registered[p.Name]
 }
 
 // Configure replaces the previous machine configuration in a single update.
 func Configure(defs map[string]Profile) {
-	next := maps.Clone(builtins)
+	mu.Lock()
+	defer mu.Unlock()
+	next := maps.Clone(registered)
 	for name, p := range defs {
 		p.Name = name
 		next[name] = p.clone()
 	}
-	mu.Lock()
-	defer mu.Unlock()
 	profiles = next
 }
 
@@ -90,7 +94,7 @@ func expand(template []string, model, effort, prompt, dir string, omitEmpty bool
 	args := make([]string, 0, len(template))
 	for i, arg := range template {
 		if omitEmpty && ((model == "" && strings.Contains(arg, "{model}")) || (effort == "" && strings.Contains(arg, "{effort}"))) {
-			if i > 0 && len(args) > 0 && strings.HasPrefix(template[i-1], "-") && !strings.ContainsAny(template[i-1], "={}") {
+			if !strings.HasPrefix(arg, "-") && i > 0 && len(args) > 0 && strings.HasPrefix(template[i-1], "-") && !strings.ContainsAny(template[i-1], "={}") {
 				args = args[:len(args)-1]
 			}
 			continue
@@ -135,6 +139,8 @@ func (p Profile) ReviewerCommand(model, effort string) string {
 	for _, arg := range args {
 		if arg == stdin {
 			words = append(words, `"$(cat)"`)
+		} else if arg == model && p.unquotedModel != nil && p.unquotedModel.MatchString(model) {
+			words = append(words, model)
 		} else {
 			words = append(words, quote(arg))
 		}
@@ -149,7 +155,7 @@ func (p Profile) MatchReviewerCommand(command string) (model, effort string, ok 
 	for _, m := range []string{modelMark, ""} {
 		for _, e := range []string{effortMark, ""} {
 			pattern := regexp.QuoteMeta(p.ReviewerCommand(m, e))
-			pattern = strings.NewReplacer(modelMark, "(?P<m>[A-Za-z0-9._/@+-]+)", effortMark, "(?P<e>[A-Za-z0-9._/@+-]+)").Replace(pattern)
+			pattern = strings.NewReplacer(modelMark, `(?P<m>[A-Za-z0-9._/@+-]+(?:\[1m\])?)`, effortMark, "(?P<e>[A-Za-z0-9._/@+-]+)").Replace(pattern)
 			re := regexp.MustCompile("^" + pattern + "$")
 			match := re.FindStringSubmatch(command)
 			if match == nil {

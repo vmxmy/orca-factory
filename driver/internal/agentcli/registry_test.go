@@ -20,7 +20,6 @@ import (
 )
 
 func TestAgentCliRegistryLookupAgy(t *testing.T) {
-	t.Cleanup(func() { agentcli.Configure(nil) })
 	want := agentcli.Profile{
 		Name: "agy", Binary: "agy",
 		ReviewArgs: []string{"--mode", "plan"}, ProbeArgs: []string{"--mode", "plan"},
@@ -76,9 +75,10 @@ func TestRegisteredReviewerRefAndRelay(t *testing.T) {
 	withPrompt := p
 	withPrompt.Name = "prompted"
 	withPrompt.ReviewArgs = slices.Concat(p.ReviewArgs, []string{"--prompt", "{prompt}"})
-	for _, profile := range []agentcli.Profile{p, withoutRelay, withPrompt, {Name: "plain", ReviewArgs: []string{"--pick", "{model}", "--set", "{effort}"}, Relay: true}} {
-		agentcli.Register(profile)
-	}
+	agentcli.Configure(map[string]agentcli.Profile{
+		p.Name: p, withoutRelay.Name: withoutRelay, withPrompt.Name: withPrompt,
+		"plain": {ReviewArgs: []string{"--pick", "{model}", "--set", "{effort}"}, Relay: true},
+	})
 
 	for _, tc := range []struct {
 		agent string
@@ -167,7 +167,12 @@ func TestLoadAgyProfile(t *testing.T) {
 func TestDriverUsesConfiguredAgent(t *testing.T) {
 	home, bin, repo := t.TempDir(), t.TempDir(), t.TempDir()
 	driver := filepath.Join(bin, "orca-factory-driver")
-	if out, err := exec.Command("go", "build", "-o", driver, "../../cmd/driver").CombinedOutput(); err != nil {
+	build := exec.Command("go", "build", "-o", driver, "../../cmd/driver")
+	// On Actions the outer race build shares a 1 GiB /tmp with this subprocess.
+	if scratch := os.Getenv("RUNNER_TEMP"); scratch != "" && os.Getenv("GOTMPDIR") == "" {
+		build.Env = append(build.Environ(), "GOTMPDIR="+scratch)
+	}
+	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build driver: %v\n%s", err, out)
 	}
 	dir := filepath.Join(home, ".config", "orca-factory")
@@ -299,7 +304,7 @@ func TestConfiguredProbeBinaryAndTemplates(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n[ \"$#\" = 3 ] && [ \"$1\" = 'm v' ] && [ \"$2\" = '--level=high' ] && [ \"$3\" = 'Reply with exactly: ok' ] && echo ok\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	agentcli.Register(agentcli.Profile{Name: "probe-alias", Binary: bin, ProbeArgs: []string{"{model}", "--level={effort}"}})
+	agentcli.Configure(map[string]agentcli.Profile{"probe-alias": {Binary: bin, ProbeArgs: []string{"{model}", "--level={effort}"}}})
 	got := modelhealth.Probe(t.Context(), modelhealth.Ref{Agent: "probe-alias", Model: "m v", Effort: "high"}, dir, modelhealth.Endpoint{})
 	if got.State != modelhealth.OK {
 		t.Fatalf("probe = %+v", got)
@@ -311,13 +316,45 @@ func TestReviewerSharedBinaryRequiresUniqueRelayProfile(t *testing.T) {
 	one := agentcli.Profile{Name: "alias-a", Binary: "shared", ReviewArgs: []string{"--model", "{model}"}, Relay: true}
 	two := one
 	two.Name, two.Relay = "alias-b", false
-	agentcli.Register(one)
-	agentcli.Register(two)
+	agentcli.Configure(map[string]agentcli.Profile{one.Name: one, two.Name: two})
 	command, err := config.GenerateReviewerCommand("alias-b:m:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if config.RelayReviewer(command, true) {
 		t.Error("ambiguous command allowed relay credentials")
+	}
+}
+
+func TestProbeKeepsFlagBeforeOmittedInlineModel(t *testing.T) {
+	p := agentcli.Profile{ProbeArgs: []string{"--sandbox", "--model={model}", "--print"}}
+	if got := p.ProbeArgv("", "", "ping"); !slices.Equal(got, []string{"--sandbox", "--print", "ping"}) {
+		t.Fatalf("default-model probe arguments = %q", got)
+	}
+}
+
+func TestLoadKeepsExplicitRegistration(t *testing.T) {
+	const name = "registered-extension"
+	agentcli.Register(agentcli.Profile{Name: name, Binary: "extension"})
+	if _, err := config.Load(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := agentcli.Lookup(name); !ok || p.Executable() != "extension" {
+		t.Fatalf("registered extension after load = %+v, %t", p, ok)
+	}
+}
+
+func TestClaudeExtendedContextReviewer(t *testing.T) {
+	want := modelhealth.Ref{Agent: "claude", Model: "opus[1m]", Effort: "high"}
+	command, err := config.GenerateReviewerCommand(want.String())
+	const original = "claude -p --model opus[1m] --effort high --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"
+	if err != nil || command != original {
+		t.Errorf("reviewer command = %q, %v; want %q", command, err, original)
+	}
+	if got, ok := config.ReviewerRef(original); !ok || got != want {
+		t.Errorf("original reviewer ref = %+v, %t; want %+v", got, ok, want)
+	}
+	if config.RelayReviewer(original, true) {
+		t.Error("extended-context alias passed the relay literal check")
 	}
 }
