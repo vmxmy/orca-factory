@@ -316,6 +316,7 @@ func TestReclaimTerminalCloseFailure(t *testing.T) {
 
 func TestReclaimIsAncestorCache(t *testing.T) {
 	w := Workspace{Path: "/ws/OF-673-executor"}
+	shallowPath := filepath.Join(t.TempDir(), "shallow")
 	head, status := "first", ""
 	var ancestorErr error
 	var revParse, mergeBase, revList int
@@ -324,8 +325,10 @@ func TestReclaimIsAncestorCache(t *testing.T) {
 		case "status":
 			return []byte(status), nil
 		case "rev-parse":
-			revParse++
-			return []byte(head + "\n"), nil
+			if slices.Equal(s.Args, []string{"rev-parse", "HEAD", "--path-format=absolute", "--git-path", "shallow"}) {
+				revParse++
+				return []byte(head + "\n" + shallowPath + "\n"), nil
+			}
 		case "merge-base":
 			mergeBase++
 			return nil, ancestorErr
@@ -361,6 +364,53 @@ func TestReclaimIsAncestorCache(t *testing.T) {
 	if revParse != beforeEmpty {
 		t.Fatalf("empty merged head ran rev-parse %d times", revParse-beforeEmpty)
 	}
+
+	t.Run("unshallow", func(t *testing.T) {
+		source := t.TempDir()
+		gitMergeTest(t, source, "init", "-b", "main")
+		gitMergeTest(t, source, "config", "user.name", "Test")
+		gitMergeTest(t, source, "config", "user.email", "test@example.test")
+		gitMergeTest(t, source, "commit", "--allow-empty", "-m", "A")
+		head := gitMergeTest(t, source, "rev-parse", "HEAD")
+		gitMergeTest(t, source, "branch", "at-a")
+		gitMergeTest(t, source, "commit", "--allow-empty", "-m", "B")
+		gitMergeTest(t, source, "commit", "--allow-empty", "-m", "C")
+		mergedHead := gitMergeTest(t, source, "rev-parse", "HEAD")
+
+		w := Workspace{Path: t.TempDir()}
+		gitMergeTest(t, source, "clone", "--depth=1", "--no-single-branch", "file://"+source, w.Path)
+		gitMergeTest(t, w.Path, "checkout", "--detach", head)
+		out, err := exec.Command("git", "-C", w.Path, "merge-base", "--is-ancestor", head, mergedHead).CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("shallow merge-base: want exit 1, got %v (%s)", err, out)
+		}
+
+		var mergeBase, revList int
+		r := &Runtime{Run: func(ctx context.Context, s runx.Spec) ([]byte, error) {
+			switch s.Args[0] {
+			case "merge-base":
+				mergeBase++
+			case "rev-list":
+				revList++
+			}
+			return runx.Run(ctx, s)
+		}}
+		check := func(wantMergeBase int) {
+			t.Helper()
+			blocks := r.reclaimBlocks(t.Context(), w, false, nil, nil, mergedHead, true)
+			if len(blocks) != 0 || mergeBase != wantMergeBase || revList != 1 {
+				t.Fatalf("blocks = %v, merge-base calls = %d, rev-list calls = %d; want [], %d, 1", blocks, mergeBase, revList, wantMergeBase)
+			}
+		}
+		check(1)
+		gitMergeTest(t, w.Path, "fetch", "--unshallow", "origin")
+		if got := gitMergeTest(t, w.Path, "rev-parse", "HEAD", "origin/main"); got != head+"\n"+mergedHead {
+			t.Fatalf("HEAD and origin/main after fetch = %q, want %s and %s", got, head, mergedHead)
+		}
+		gitMergeTest(t, w.Path, "merge-base", "--is-ancestor", head, mergedHead)
+		check(2)
+	})
 }
 
 // Terminal tickets lose every workspace, active tickets lose only superseded
@@ -388,6 +438,7 @@ func TestReclaimWorkspaces(t *testing.T) {
 	}
 	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p"}}
 	r := &Runtime{Clients: map[string]issues.Store{"/repo": lc}, Repositories: map[string]config.Repository{"/repo": repo}, Workspaces: fake}
+	shallowPath := filepath.Join(t.TempDir(), "shallow")
 	r.Run = func(_ context.Context, s runx.Spec) ([]byte, error) {
 		name := filepath.Base(s.Dir)
 		switch s.Args[0] {
@@ -397,8 +448,8 @@ func TestReclaimWorkspaces(t *testing.T) {
 			}
 			return nil, nil
 		case "rev-parse":
-			if slices.Equal(s.Args, []string{"rev-parse", "HEAD"}) {
-				return []byte(head + "\n"), nil
+			if slices.Equal(s.Args, []string{"rev-parse", "HEAD", "--path-format=absolute", "--git-path", "shallow"}) {
+				return []byte(head + "\n" + shallowPath + "\n"), nil
 			}
 		case "merge-base":
 			if (name == "OF-1-executor" || name == "OF-7-executor") && slices.Equal(s.Args[1:], []string{"--is-ancestor", head, merged}) {

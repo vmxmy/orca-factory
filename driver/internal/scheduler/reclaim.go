@@ -256,28 +256,46 @@ func (r *Runtime) reclaimBlocks(ctx context.Context, w Workspace, pinned bool, t
 	return blocks
 }
 
-type isAncestorEntry struct {
+type ancestryInputs struct {
 	head, mergedHead string
-	result           bool
+	shallowRoots     string
+	hasShallowFile   bool
+}
+
+type isAncestorEntry struct {
+	inputs ancestryInputs
+	result bool
+}
+
+func (r *Runtime) reclaimAncestryInputs(ctx context.Context, path, mergedHead string) (ancestryInputs, bool) {
+	out, err := r.command(ctx, path, "git", "rev-parse", "HEAD", "--path-format=absolute", "--git-path", "shallow")
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if err != nil || len(lines) != 2 || lines[0] == "" || !filepath.IsAbs(lines[1]) {
+		return ancestryInputs{}, false
+	}
+	roots, err := os.ReadFile(lines[1])
+	return ancestryInputs{
+		head: lines[0], mergedHead: mergedHead,
+		shallowRoots: string(roots), hasShallowFile: err == nil,
+	}, err == nil || errors.Is(err, os.ErrNotExist)
 }
 
 func (r *Runtime) reclaimIsAncestor(ctx context.Context, path, mergedHead string) bool {
-	out, err := r.command(ctx, path, "git", "rev-parse", "HEAD")
-	head := strings.TrimSpace(string(out))
-	if err != nil || head == "" {
-		_, err = r.command(ctx, path, "git", "merge-base", "--is-ancestor", "HEAD", mergedHead)
+	inputs, ok := r.reclaimAncestryInputs(ctx, path, mergedHead)
+	if !ok {
+		_, err := r.command(ctx, path, "git", "merge-base", "--is-ancestor", "HEAD", mergedHead)
 		return err == nil
 	}
-	if cached := r.isAncestorCache[path]; cached.head == head && cached.mergedHead == mergedHead {
+	if cached := r.isAncestorCache[path]; cached.inputs == inputs {
 		return cached.result
 	}
-	_, err = r.command(ctx, path, "git", "merge-base", "--is-ancestor", head, mergedHead)
+	_, err := r.command(ctx, path, "git", "merge-base", "--is-ancestor", inputs.head, mergedHead)
 	var exit interface{ ExitCode() int }
 	if err == nil || (errors.As(err, &exit) && exit.ExitCode() == 1) {
 		if r.isAncestorCache == nil {
 			r.isAncestorCache = make(map[string]isAncestorEntry)
 		}
-		r.isAncestorCache[path] = isAncestorEntry{head: head, mergedHead: mergedHead, result: err == nil}
+		r.isAncestorCache[path] = isAncestorEntry{inputs: inputs, result: err == nil}
 	}
 	return err == nil
 }
