@@ -152,13 +152,13 @@ orca-factory-driver status --json
 
 票面 CHECK 写错导致执行器反复 correction 时，先改正票面，再在账本追加一条以 `gate-spec-refresh:` 开头的评论，例如 `gate-spec-refresh: 已改正 CHECK`。执行器在下一次 gate 运行前写回执 `gate-spec-refresh 已执行 attempt=N term=<终端>` 并退出；调度器按原 attempt 重启该阶段，新执行器用新票面重写 `gate.spec`，不计执行器失败和 correction 次数。每个 attempt 只生效一次，同一 attempt 内再写的指令被忽略。指令到达时若执行器已进入交接，账本出现 `gate-spec-refresh 未执行：已进入交接，按旧 spec 冻结`，交接按旧 spec 继续。指令只作用于执行器阶段；已进入合并交接的票不受影响。指令没有作者校验，契约见 [CONTRACTS.md](CONTRACTS.md)。
 
-`manual` 模式且未启用安全文件开关时，worker 报告缺 SCOPE 外文件不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
+worker 需要修改 SCOPE 外文件时，在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，再判断是否自动批准。未获批准时，执行器写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
 
-生效模式为 `auto` 时，执行器对有效的 `SCOPE-BLOCKED` 申请直接使用处置阶段的确定性规则，无需 `resolver-state` 记录，也无需启用 `AGENT_WORKER_AUTO_SCOPE`。申请每次最多 10 个仓库内字面路径，不得命中 lane 3 或控制文件；worker、普通处置和终审合计每票最多自动批准 4 次。票未取消、具有 SCOPE 和 LANE 预判、合并证据有效、部署屏障未暂停，且没有冻结的合并 spec，才能批准。控制文件排除规则与下方自动扩 SCOPE 一节相同，任何条件不满足都整批转处置 Agent。
+生效模式为 `auto` 时，执行器对有效的 `SCOPE-BLOCKED` 申请使用处置阶段的确定性规则。在 `manual` 或缺省模式下，仓库 `AGENT_AUTO_REVIEW` 的逗号分隔列表中只要有一项去掉首尾空白后等于 `scope` 或 `top`，也优先使用这套规则。两种情况都无需 `resolver-state` 记录或 `AGENT_WORKER_AUTO_SCOPE` 开关。申请每次最多 10 个仓库内字面路径，不得命中 lane 3 或控制文件；worker、普通处置和终审合计每票最多自动批准 4 次。票未取消、具有 SCOPE 和 LANE 预判、合并证据有效、部署屏障未暂停，且没有冻结的合并 spec，才能批准。控制文件排除规则与下方自动扩 SCOPE 一节相同，任何条件不满足都整批转处置 Agent。
 
 批准时先写一条 `扩SCOPE：worker-auto <RFC3339>` 审计评论，附条件、批准次数与路径，再更新票面、简报和 gate spec，通过 `workerScopeExtended` 进入 correction。该评论计入处置阶段的批准上限，但不含归属、阶段或 `resolver-state` 行。正常重试遇到票面已包含的路径不重复写入。读写失败停止执行，写入故障窗口沿用已有 worker 扩展流程。
 
-在 driver 进程环境设置 `AGENT_WORKER_AUTO_SCOPE=1` 可启用安全文件自动扩 SCOPE，默认关闭，其他值也视为关闭。该开关从进程环境读取，仅写入 `agent-graph.env` 不会生效。`manual` 模式下仍沿用下面的白名单；`auto` 模式使用上面的共用规则，拒绝后不回退到白名单。它独立于处置阶段的 `AGENT_AUTO_REVIEW=scope`。
+在 driver 进程环境设置 `AGENT_WORKER_AUTO_SCOPE=1` 可启用安全文件自动扩 SCOPE，默认关闭，其他值也视为关闭。该开关从进程环境读取，仅写入 `agent-graph.env` 不会生效。在 `manual` 或缺省模式下，若仓库没有显式配置 `scope` 或 `top`（包括仅配置 `release`），才由此开关决定是否使用下面的白名单。开关关闭时直接转处置 Agent。
 
 启用后，执行器只自动批准已有字面 Go 源文件同目录的 `*_test.go` 和 `README.md`，类别分别是「同包 Go 测试」和「同包 README」。原 SCOPE 中的 glob 和测试文件不能作为同包依据。所有申请路径仍须通过 intake 共用的字面路径与 lane 3 校验。路径任一段为 `.github`、`agent-gates`、`deploy`、`prod`、`production`、`migrations`、`data`，以 `.env` 开头，或含 `secret`、`credential` 时拒绝自动扩展，比较不区分大小写。混入任何非安全文件就整批交处置 Agent，取消的票、票面 lane 3、缺少 SCOPE 或已有冻结合并 spec 的票也不自动扩展。
 
@@ -587,7 +587,7 @@ orca-factory-driver gear clear OF
 
 执行器在启动时读取仓库 `AGENT_MODE`，以飞书项目键 `AGENT_FEISHU_PROJECT` 读取本机 gear 覆盖。模式读取失败或值不是 `auto` 时，执行器按 `manual` 运行。手工运行 `driver exec` 也使用此生效模式，启动后不热加载配置或 gear。
 
-`auto` 模式也在 worker 报告有效的 `SCOPE-BLOCKED` 时当场判断扩 SCOPE：每次最多 10 个路径，不命中 lane 3 或控制文件，且没有冻结合并 spec，沿用处置阶段的票面与合并证据校验。批准后写审计并进入 correction，拒绝则转处置 Agent。worker 的 `扩SCOPE：worker-auto ` 与处置的 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 合计每票最多 4 次。
+worker 报告有效的 `SCOPE-BLOCKED` 时，`auto` 模式或仓库 `AGENT_AUTO_REVIEW` 显式包含 `scope`、`top` 中任一项，执行器就按确定性规则判断能否扩 SCOPE。每次最多 10 个路径，不命中 lane 3 或控制文件，且没有冻结合并 spec，沿用处置阶段的票面与合并证据校验。批准后写审计并进入 correction，拒绝则转处置 Agent。worker 的 `扩SCOPE：worker-auto ` 与处置的 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 合计每票最多 4 次。
 
 `auto` 隐含 `AGENT_AUTO_REVIEW` 的 `scope`、`release`、`top`，与显式开关取并集。`auto` 下票的归属不会变成 `人`，也不发转人卡片：
 

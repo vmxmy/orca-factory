@@ -375,6 +375,71 @@ func (s *scopeIssues) Edit(ctx context.Context, id string, patch []byte) (issues
 	return s.Read(ctx, id)
 }
 
+func TestWorkerScopeAutoApproveWithExplicitAutoReview(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, autoReview string
+		approved               bool
+	}{
+		{name: "explicit top", autoReview: "top", approved: true},
+		{name: "explicit scope", autoReview: "scope", approved: true},
+		{name: "no explicit review"},
+		{name: "auto mode", mode: "auto", approved: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_WORKER_AUTO_SCOPE", "")
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+			e, o, _, recovery, ledger, ticket := recoveryFixture(t)
+			repo := t.TempDir()
+			profile := filepath.Join(repo, "scripts/agent-gates/agent-graph.env")
+			if err := os.MkdirAll(filepath.Dir(profile), 0700); err != nil {
+				t.Fatal(err)
+			}
+			body := "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD=review\nAGENT_TIER_DEFAULT=codex::low\nAGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_PROJECT=owner/repo\nAGENT_AUTO_REVIEW=" + tc.autoReview + "\n"
+			if tc.mode != "" {
+				body += "AGENT_MODE=" + tc.mode + "\n"
+			}
+			if err := os.WriteFile(profile, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			configured, _, err := repositoryExecutor(context.Background(), repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			configured.Config.Owner = e.Config.Owner
+			configured.Config.Repository = e.Config.Repository
+			configured.Config.Repo = e.Config.Repo
+			configured.Config.Root = e.Config.Root
+			configured.Config.Terminal = e.Config.Terminal
+			configured.Config.Mode = tc.mode
+			e.Config = configured.Config
+			ticket.Scope = "unit/change.go"
+			face := "## LANE 预判\n2\n\n## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"
+			store := &scopeIssues{budgetIssues: ledger, description: face}
+			e.Issues = store
+			o.failFirst = true
+			o.failBody = "SCOPE-BLOCKED: docs/worker.md"
+			result, err := e.Execute(context.Background(), ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			comments := strings.Join(ledger.comments, "\n")
+			if !tc.approved {
+				if result.State.Owner != machine.OwnerResolver || result.State.Corrections != 0 || recovery.sessions != 0 || len(o.starts) != 1 || store.description != face || strings.Contains(comments, "扩SCOPE：worker-auto ") {
+					t.Fatalf("unconfigured request did not remain with resolver: state=%+v comments=%q", result.State, comments)
+				}
+				return
+			}
+			if result.State.Owner != machine.OwnerMerge || result.State.Corrections != 1 || result.State.Infra != 0 || recovery.sessions != 1 || len(o.starts) != 2 {
+				t.Fatalf("auto-approved scope did not restart worker: state=%+v sessions=%d starts=%d", result.State, recovery.sessions, len(o.starts))
+			}
+			if strings.Count(comments, "扩SCOPE：worker-auto ") != 1 || !strings.Contains(store.description, "## SCOPE\nunit/change.go docs/worker.md\n") {
+				t.Fatalf("deterministic approval did not update scope and audit: face=%q comments=%q", store.description, comments)
+			}
+		})
+	}
+}
+
 func TestWorkerScopeBlockedSafeFilesExtendScope(t *testing.T) {
 	for _, tc := range []struct {
 		name, enabled, files, lane3 string
