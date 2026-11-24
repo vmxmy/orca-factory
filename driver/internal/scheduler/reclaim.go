@@ -27,6 +27,8 @@ type WorkspaceClient interface {
 // OF-329 requires an hour without output: exec terminals also have no agent identity.
 const reclaimTerminalIdle = time.Hour
 
+const maxReclaimFailures = 5
+
 // Workspace is a driver-created Orca workspace, identified by the directory
 // name the executor (`<ticket>-executor`) or resolver (`<ticket>-resolver-<round>`)
 // gave it. Orca appends `-<n>` when a name collides; Copy is that n, 0 without a suffix.
@@ -177,6 +179,9 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 }
 
 func (r *Runtime) removeWorkspace(ctx context.Context, v Verdict, terminals []orca.Terminal, listings []repositoryWorkspaces, logger *slog.Logger) []string {
+	if r.reclaimFailures[v.Path] >= maxReclaimFailures {
+		return []string{"remove-failed-giving-up"}
+	}
 	for _, terminal := range terminals {
 		if err := r.Workspaces.TerminalClose(ctx, terminal.Handle); err != nil {
 			var rejected *orca.RejectedError
@@ -201,8 +206,16 @@ func (r *Runtime) removeWorkspace(ctx context.Context, v Verdict, terminals []or
 		}
 	}
 	if err := r.Workspaces.WorktreeRemove(ctx, v.Path); err != nil {
+		if r.reclaimFailures == nil {
+			r.reclaimFailures = make(map[string]int)
+		}
+		r.reclaimFailures[v.Path]++
+		if r.reclaimFailures[v.Path] >= maxReclaimFailures {
+			return []string{"remove-failed-giving-up"}
+		}
 		return []string{"remove-failed"}
 	}
+	delete(r.reclaimFailures, v.Path)
 	logger.Info("workspace removed", "path", v.Path, "reason", v.Reason)
 	return nil
 }
