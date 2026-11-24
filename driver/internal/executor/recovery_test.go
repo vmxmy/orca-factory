@@ -386,13 +386,18 @@ func TestCorrectionCommands(t *testing.T) {
 		t.Setenv(key, "test-hook-value")
 	}
 	t.Setenv("CORRECTION_TEST_ENV", "preserved")
+	t.Setenv("AGENT_CORRECTION", "claude:claude-opus-5-5:high")
+	t.Setenv("AGENT_CORRECTION_FALLBACK", "")
 	c := Commands{Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
-		if s.Path != "claude" || len(s.Args) != 10 || s.Args[0] != "-p" || !strings.Contains(s.Args[1], target) || s.Timeout <= 0 || s.Dir != repo {
+		if s.Path != "claude" || len(s.Args) != 14 || s.Args[0] != "-p" || !strings.Contains(s.Args[1], target) || s.Timeout != 10*time.Minute || s.Dir != repo {
 			t.Fatalf("invalid correction invocation: path=%q args=%q dir=%q timeout=%v", s.Path, s.Args, s.Dir, s.Timeout)
 		}
 		flags := map[string]string{}
 		for i := 2; i < len(s.Args); i += 2 {
 			flags[s.Args[i]] = s.Args[i+1]
+		}
+		if flags["--model"] != "claude-opus-5-5" || flags["--effort"] != "high" {
+			t.Fatalf("unexpected correction model or effort: %v", flags)
 		}
 		if flags["--permission-mode"] != "acceptEdits" || flags["--add-dir"] != state {
 			t.Fatalf("missing correction write authorization: %v", flags)

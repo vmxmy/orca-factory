@@ -738,6 +738,8 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环�
 | 需求助手 | `intake.Runner.Turn`（每轮） | 网关 stderr `intake model falls back: configured=… selected=…` |
 | 接入 Agent | `onboardAgentArgs`（启动接入 Agent 时） | stderr `onboard model falls back: configured=… selected=…` |
 
+写 correction 的会话也查模型可用性登记。执行器从进程环境读取 `AGENT_CORRECTION`（默认 `claude:claude-opus-5-5:high`）和 `AGENT_CORRECTION_FALLBACK`（默认 `codex:gpt-6.2-astra:high`）。主选在冷却时，执行器按顺序用第一个可用候选。所有候选都在冷却时，执行器跳过会话，把失败证据写入 `correction.md` 交给 worker。
+
 终审的处置记录固定档位后，新一轮派工仍先按 OF-583 跟随当前配置，再按兜底候选挑选可用模型。已派工轮次的恢复沿用冻结记录，不换模型。`orca-factory-driver config` 在每个仓库下的「兜底候选」中按键列出角色与档的全部 `_FALLBACK`，包括终审与 max 等升档档。施工与处置选中 model 为空的候选时不传 effort；终审候选必须写出 model 与 effort。
 
 ### 运行中的模型错误（OF-594）
@@ -748,6 +750,7 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环�
 | --- | --- | --- |
 | 处置 Agent、终审 | 终端安静满 1 分钟后，或派工结束却没有报告时，读屏幕底部 20 行 | 停止并释放派工，本轮记为 `model-unavailable`（不计入 `resolverFailureLimit`，不按「终审模型未获响应」处理），调度器立即用下一个候选重派 |
 | worker | 终端安静满 1 分钟后，或 worker 退出却没有 `worker_done` 时，读屏幕底部 20 行 | 停止派工；该档还有可用候选时直接用下一个候选重做原简报（不起 correction 会话），不计 correction 与 infra 预算；没有可用候选时直接搁置 |
+| correction 会话 | 命令非零退出后看输出 | 把遇到周限额等模型错误的候选登记为不可用，在会话的十分钟期限内换一个可用候选重试一次 |
 | 主审查、小票审查、交叉复审、需求助手 | 命令非零退出后看输出 | 同一步内换下一个候选重试一次；每个因模型错误失败的候选都登记 |
 
 屏幕底部仍显示运行中回合的页脚 `esc to interrupt` 时不判模型错误。屏幕识别到错误后，driver 先向该模型发一次探测请求，探测也确认不可用才停止派工并登记，Agent 输出里引用的报错不会让它被停掉。屏幕读取失败或登记写入失败时，驱动器沿用原无进展窗口或停滞规则。

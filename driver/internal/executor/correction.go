@@ -47,9 +47,18 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 		return err
 	}
 	prompt := fmt.Sprintf("%s\n\nCorrection file: %q\nCorrection: %d/3\nFailure: %s\nBrief:\n%s", role, req.Path, req.Number, req.Cause, req.Brief)
-	run := c.Run
-	if run == nil {
-		run = runx.Run
+	candidates, err := correctionCandidates()
+	if err != nil {
+		return err
+	}
+	ref := candidates[0]
+	if c.StateRoot != "" {
+		if registry, err := modelhealth.Open(c.StateRoot); err == nil {
+			var ok bool
+			if ref, ok = registry.Select(candidates, time.Now()); !ok {
+				return os.WriteFile(req.Path, correctionFallback(nil, req.Cause, "所有模型不可用"), 0o600)
+			}
+		}
 	}
 	// A coordinator subprocess must not inherit this worker's Orca hooks.
 	env := make([]string, 0)
@@ -61,13 +70,43 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 		}
 		env = append(env, entry)
 	}
-	_, err = run(ctx, runx.Spec{
-		Path: "claude",
-		Args: []string{"-p", prompt, "--permission-mode", "acceptEdits", "--add-dir", filepath.Dir(req.Path),
-			"--allowedTools", "Read,Grep,Glob,Write,Edit", "--tools", "Read,Grep,Glob,Write,Edit"},
-		Dir: req.Repo, Env: env, Timeout: 10 * time.Minute,
-	})
-	return err
+	const timeout = 10 * time.Minute
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		spec := runx.Spec{Path: ref.Agent, Dir: req.Repo, Env: env, Timeout: timeout}
+		switch ref.Agent {
+		case "claude":
+			spec.Args = []string{"-p", prompt, "--model", ref.Model, "--effort", ref.Effort,
+				"--permission-mode", "acceptEdits", "--add-dir", filepath.Dir(req.Path),
+				"--allowedTools", "Read,Grep,Glob,Write,Edit", "--tools", "Read,Grep,Glob,Write,Edit"}
+		case "codex":
+			spec.Args = []string{"exec", "-m", ref.Model, "-c", "model_reasoning_effort=" + ref.Effort, "--ephemeral", prompt}
+		default:
+			return errors.New("correction agent must be claude or codex")
+		}
+		output, err := c.runSpec(ctx, spec)
+		if err == nil {
+			return nil
+		}
+		next, retry, recordErr := config.RetryAfterModelError(c.StateRoot, ref, candidates, output, err, time.Now())
+		if !retry {
+			return errors.Join(err, recordErr)
+		}
+		ref, candidates = next, nil // Record a failed retry without launching a third session.
+	}
+}
+
+func correctionCandidates() ([]modelhealth.Ref, error) {
+	primary, err := modelhealth.Parse(cmp.Or(os.Getenv("AGENT_CORRECTION"), "claude:claude-opus-5-5:high"))
+	if err != nil {
+		return nil, fmt.Errorf("AGENT_CORRECTION: %w", err)
+	}
+	fallbacks, err := config.ParseFallback(cmp.Or(os.Getenv("AGENT_CORRECTION_FALLBACK"), "codex:gpt-6.2-astra:high"))
+	if err != nil {
+		return nil, fmt.Errorf("AGENT_CORRECTION_FALLBACK: %w", err)
+	}
+	return append([]modelhealth.Ref{primary}, fallbacks...), nil
 }
 func (c *Commands) orcaCall(ctx context.Context, args ...string) (orca.Receipt, error) {
 	path, err := runx.OrcaPath()
