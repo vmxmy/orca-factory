@@ -71,6 +71,26 @@ func (f *livenessBackend) ReapDead(_ context.Context, t Ticket) error {
 	return f.reapErr
 }
 
+func TestReapFailureKeepsUnderlyingError(t *testing.T) {
+	reapErr := errors.New("worker abandon 回执不符")
+	b := &livenessBackend{verdict: orca.LivenessDead, reapErr: reapErr}
+	s := setup(&b.fakeBackend)
+	s.Backend = b
+	var problems []error
+	if got := s.heartbeat(context.Background(), Ticket{Identifier: "OF-671"}, &problems); got != beatSkip {
+		t.Fatalf("heartbeat=%v, want beatSkip", got)
+	}
+	if len(problems) != 1 {
+		t.Fatalf("problems=%v, want one error", problems)
+	}
+	if !strings.Contains(problems[0].Error(), "dead process reap failed: OF-671: worker abandon 回执不符") {
+		t.Errorf("reap error lost context: %v", problems[0])
+	}
+	if !errors.Is(problems[0], reapErr) {
+		t.Errorf("reap error does not wrap underlying error: %v", problems[0])
+	}
+}
+
 type reapOrca struct {
 	fakeOrca
 	abandoned []string
