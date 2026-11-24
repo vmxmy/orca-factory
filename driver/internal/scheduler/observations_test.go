@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 )
 
 func TestAutomationDisabledRefusedPersistsAcrossRestart(t *testing.T) {
 	ctx := context.Background()
-	repo := config.Repository{Path: "/repo"}
+	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "org/repo"}}
 	const wantError = "automation read failed: unavailable"
 
 	t.Run("restart and expiry", func(t *testing.T) {
@@ -61,6 +62,33 @@ func TestAutomationDisabledRefusedPersistsAcrossRestart(t *testing.T) {
 		disabled, err = third.AutomationDisabled(ctx, repo)
 		if !disabled || err != nil || oc.reads != 2 {
 			t.Fatalf("expired file: disabled=%v err=%v reads=%d", disabled, err, oc.reads)
+		}
+	})
+
+	t.Run("single repository startup", func(t *testing.T) {
+		root := t.TempDir()
+		oc := &startupOrca{failRead: 1, fakeOrca: fakeOrca{automations: receipt(`{"automations":[]}`)}}
+		first := &Runtime{StateRoot: root, Orca: oc}
+		disabled, err := first.AutomationDisabled(ctx, repo)
+		if disabled || err == nil || err.Error() != wantError || oc.reads != 1 {
+			t.Fatalf("first read: disabled=%v err=%v reads=%d", disabled, err, oc.reads)
+		}
+
+		second := &Runtime{StateRoot: root, Orca: oc}
+		clientCalls := 0
+		newClient := func(context.Context, map[string]string) (issues.Store, error) {
+			clientCalls++
+			return &fakeIssues{}, nil
+		}
+		if err := second.initialize(ctx, []config.Repository{repo}, newClient); err != nil {
+			t.Errorf("initialize() = %v, want nil", err)
+		}
+		if clientCalls != 0 || oc.reads != 1 {
+			t.Errorf("after initialize: client calls=%d, Orca reads=%d, want 0 and 1", clientCalls, oc.reads)
+		}
+		disabled, err = second.AutomationDisabled(ctx, repo)
+		if disabled || err == nil || err.Error() != wantError || oc.reads != 1 {
+			t.Errorf("after initialize: disabled=%v err=%v reads=%d, want false, %q, 1", disabled, err, oc.reads, wantError)
 		}
 	})
 
