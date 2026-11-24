@@ -639,12 +639,12 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 	if err == nil && decision.Action == "escalate" {
 		class = decision.Class
 	}
-	if autoMode(env) {
+	if autoMode(env) || explicitAutoReview(env, "scope") || explicitAutoReview(env, "top") {
 		human, err := r.mustHuman(ctx, t, class)
 		if err != nil {
 			return err
 		}
-		if human {
+		if human && autoMode(env) {
 			return r.parkResolution(ctx, t, p, reason, evidence)
 		}
 		if !p.Top && len(decision.ScopeRequest()) > 0 {

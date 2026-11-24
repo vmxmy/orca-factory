@@ -28,6 +28,55 @@ import (
 	"unicode/utf8"
 )
 
+func TestResolverScopeAutoApproveWithExplicitAutoReview(t *testing.T) {
+	decision := recorded(t, "resolver-escalate-scope.json")
+	for _, tc := range []struct {
+		name    string
+		review  string
+		mode    string
+		approve bool
+	}{
+		{name: "top", review: "top", approve: true},
+		{name: "scope", review: "scope", approve: true},
+		{name: "default"},
+		{name: "auto", mode: "auto", approve: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: 3, Phase: "result", Outcome: "failed", Result: string(decision)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			face := "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go\n"
+			store := &autoModeScopeStore{labelStore: labelStore{fakeIssues: fakeIssues{
+				description:   face,
+				issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", resolver.Prefix+string(raw)),
+			}}}
+			r := modeRuntime(store, map[string]string{"AGENT_AUTO_REVIEW": tc.review, "AGENT_MODE": tc.mode})
+			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo"}, store.issueComments)
+			if err := r.applyResolution(context.Background(), ticket); err != nil {
+				t.Fatal(err)
+			}
+			after := fromEvidence(t, ticket, store.issueComments)
+			if len(store.comments) != 1 {
+				t.Fatalf("expected one resolution receipt: %q", store.comments)
+			}
+			if after.Resolution.Top || after.Resolution.TopUsed {
+				t.Fatalf("scope request consumed final review: %+v", after.Resolution)
+			}
+			if tc.approve {
+				if !strings.HasPrefix(store.comments[0], "扩SCOPE：auto ") || after.Owner != machine.OwnerResolver || after.Resolution.Phase != "waiting" {
+					t.Fatalf("scope not automatically approved: comments=%q resolution=%+v owner=%s", store.comments, after.Resolution, after.Owner)
+				}
+				if store.description != "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go scripts/module-size-metric-report.test.mjs\n" {
+					t.Fatalf("scope face=%q", store.description)
+				}
+			} else if store.description != face || !strings.HasPrefix(store.comments[0], "转人: ") || after.Owner != machine.OwnerHuman || after.Resolution.Phase != "human" {
+				t.Fatalf("default manual handling changed: face=%q comments=%q resolution=%+v owner=%s", store.description, store.comments, after.Resolution, after.Owner)
+			}
+		})
+	}
+}
+
 func TestHumanTicketDispatchesResolver(t *testing.T) {
 	f := &fakeBackend{tickets: []Ticket{{ID: "id", Identifier: "ENG-1", Repo: "a", Owner: machine.OwnerHuman, Phase: machine.PhaseHuman, Attempt: 2}}}
 	s := setup(f)
