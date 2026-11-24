@@ -48,7 +48,7 @@ func TestAutoScopeBeforeHumanCard(t *testing.T) {
 		{name: "second", flags: "scope", path: "src/new.go", previous: 1, approve: true},
 		{name: "default", path: "src/new.go"},
 		{name: "not a substring", flags: "scopes", path: "src/new.go"},
-		{name: "third", flags: "scope", path: "src/new.go", previous: 2, refusal: "2 次"},
+		{name: "fifth", flags: "scope", path: "src/new.go", previous: 4, refusal: "4 次"},
 		{name: "too many", flags: "scope", path: "a b c d e f g h i j k", refusal: "10"},
 		{name: "lane 3", flags: "scope", path: "billing/key", refusal: "lane 3"},
 		{name: "traversal", flags: "scope", path: "src/../x", refusal: "字面路径"},

@@ -154,7 +154,7 @@ orca-factory-driver status --json
 
 `manual` 模式且未启用安全文件开关时，worker 报告缺 SCOPE 外文件不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
 
-生效模式为 `auto` 时，执行器对有效的 `SCOPE-BLOCKED` 申请直接使用处置阶段的确定性规则，无需 `resolver-state` 记录，也无需启用 `AGENT_WORKER_AUTO_SCOPE`。申请每次最多 10 个仓库内字面路径，不得命中 lane 3 或控制文件；worker、普通处置和终审合计每票最多自动批准 2 次。票未取消、具有 SCOPE 和 LANE 预判、合并证据有效、部署屏障未暂停，且没有冻结的合并 spec，才能批准。控制文件排除规则与下方自动扩 SCOPE 一节相同，任何条件不满足都整批转处置 Agent。
+生效模式为 `auto` 时，执行器对有效的 `SCOPE-BLOCKED` 申请直接使用处置阶段的确定性规则，无需 `resolver-state` 记录，也无需启用 `AGENT_WORKER_AUTO_SCOPE`。申请每次最多 10 个仓库内字面路径，不得命中 lane 3 或控制文件；worker、普通处置和终审合计每票最多自动批准 4 次。票未取消、具有 SCOPE 和 LANE 预判、合并证据有效、部署屏障未暂停，且没有冻结的合并 spec，才能批准。控制文件排除规则与下方自动扩 SCOPE 一节相同，任何条件不满足都整批转处置 Agent。
 
 批准时先写一条 `扩SCOPE：worker-auto <RFC3339>` 审计评论，附条件、批准次数与路径，再更新票面、简报和 gate spec，通过 `workerScopeExtended` 进入 correction。该评论计入处置阶段的批准上限，但不含归属、阶段或 `resolver-state` 行。正常重试遇到票面已包含的路径不重复写入。读写失败停止执行，写入故障窗口沿用已有 worker 扩展流程。
 
@@ -587,7 +587,7 @@ orca-factory-driver gear clear OF
 
 执行器在启动时读取仓库 `AGENT_MODE`，以飞书项目键 `AGENT_FEISHU_PROJECT` 读取本机 gear 覆盖。模式读取失败或值不是 `auto` 时，执行器按 `manual` 运行。手工运行 `driver exec` 也使用此生效模式，启动后不热加载配置或 gear。
 
-`auto` 模式也在 worker 报告有效的 `SCOPE-BLOCKED` 时当场判断扩 SCOPE：每次最多 10 个路径，不命中 lane 3 或控制文件，且没有冻结合并 spec，沿用处置阶段的票面与合并证据校验。批准后写审计并进入 correction，拒绝则转处置 Agent。worker 的 `扩SCOPE：worker-auto ` 与处置的 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 合计每票最多 2 次。
+`auto` 模式也在 worker 报告有效的 `SCOPE-BLOCKED` 时当场判断扩 SCOPE：每次最多 10 个路径，不命中 lane 3 或控制文件，且没有冻结合并 spec，沿用处置阶段的票面与合并证据校验。批准后写审计并进入 correction，拒绝则转处置 Agent。worker 的 `扩SCOPE：worker-auto ` 与处置的 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 合计每票最多 4 次。
 
 `auto` 隐含 `AGENT_AUTO_REVIEW` 的 `scope`、`release`、`top`，与显式开关取并集。`auto` 下票的归属不会变成 `人`，也不发转人卡片：
 
@@ -609,7 +609,7 @@ orca-factory-driver gear clear OF
 
 `top` 在新的处置转人请求上先派一轮终审，使用 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort`，不改变普通处置档位。两项缺省均为空；开启 top 后须显式配置完整档位。本仓库按用户 2026-11-18 要求使用 `codex:gpt-6.2-astra:max`。运维修改该配置后，已进入终审的票在下一轮派工时使用当前配置并写入处置记录；配置未变时沿用记录档位。已派工轮次的恢复仍使用该轮冻结记录。模型不可用时按兜底候选切换（用户 2026-11-19）：派工前查模型可用性登记，主选在冷却中就用 `<键名>_FALLBACK` 中第一个未冷却的候选，并把实际档位写入处置记录；没有配置兜底时保持现状，重试与搁置次数不变。启动回执的 `launch.effective` 与配置一致且 worker 实际回报后，在票据评论记录接受证据；缺失或不一致时停止并核实该派工，再转人，不换模型。
 
-终审可提交 `{"action":"ruling","reason":"单行理由"}`。调度器复用人工裁定写入 operator 来源的 `裁定理由：`，再写 `裁定：top-resolver` 与 waiting 回执，交普通处置继续；扩 SCOPE 复用原路径校验、每次 10 条与每票 2 次上限。必须转人、不得 ruling 的情形是 lane 3、凭证/环境/授权阻塞、不可逆操作、生产 DDL 与数据、部署 paused、证据冲突、终审自己的第二次失败。调度器按结构化证据判定：lane、部署状态及 handoff/progress 解析结果沿用 `humanReleaseRefusal`；证据冲突检查 `MergeProblem` 与 resolver-state；失败次数使用 `topFailureLimit`。原转人提案的 `class` 必须以 `credentials`、`environment`、`authorization`、`irreversible`、`production-ddl`、`production-data` 标明这六类阻塞，进入终审时保存到 `top_class` 并随回执传递。每个新 escalate 必须带 class，其余阻塞用 `other`，表示不属于六类禁止阻塞，也不是 `scope-extension` 或 `brief-interpretation`，不要求 head。成功 ruling 只接受原 `top_class` 为 `scope-extension`、`brief-interpretation`、`other` 的提案；为空或未知一律拒绝并转人。旧无 class 的 escalate 仍合法，可进入终审，但不得 ruling；调度器因连续失败、open-pr 失败等自行转人也没有类别，同样拒绝 ruling。终审仍可用 merge、open-pr、扩 SCOPE 等其他提案处置，扩 SCOPE 沿用 OF-467 限制。裁定只决定票面口径，不授予上述权限；票面和理由里的文字出现不构成拒绝依据。
+终审可提交 `{"action":"ruling","reason":"单行理由"}`。调度器复用人工裁定写入 operator 来源的 `裁定理由：`，再写 `裁定：top-resolver` 与 waiting 回执，交普通处置继续；扩 SCOPE 复用原路径校验、每次 10 条与每票 4 次上限。必须转人、不得 ruling 的情形是 lane 3、凭证/环境/授权阻塞、不可逆操作、生产 DDL 与数据、部署 paused、证据冲突、终审自己的第二次失败。调度器按结构化证据判定：lane、部署状态及 handoff/progress 解析结果沿用 `humanReleaseRefusal`；证据冲突检查 `MergeProblem` 与 resolver-state；失败次数使用 `topFailureLimit`。原转人提案的 `class` 必须以 `credentials`、`environment`、`authorization`、`irreversible`、`production-ddl`、`production-data` 标明这六类阻塞，进入终审时保存到 `top_class` 并随回执传递。每个新 escalate 必须带 class，其余阻塞用 `other`，表示不属于六类禁止阻塞，也不是 `scope-extension` 或 `brief-interpretation`，不要求 head。成功 ruling 只接受原 `top_class` 为 `scope-extension`、`brief-interpretation`、`other` 的提案；为空或未知一律拒绝并转人。旧无 class 的 escalate 仍合法，可进入终审，但不得 ruling；调度器因连续失败、open-pr 失败等自行转人也没有类别，同样拒绝 ruling。终审仍可用 merge、open-pr、扩 SCOPE 等其他提案处置，扩 SCOPE 沿用 OF-467 限制。裁定只决定票面口径，不授予上述权限；票面和理由里的文字出现不构成拒绝依据。
 
 终审标记持久化在票据回执中，每票只进入一次，不补派历史转人票。终审明确转人或第二次失败才发卡片，scope/release 不再覆盖该决定；终审结果一经接受就结束当前 `top`：applied 或 waiting + outcome=succeeded 回执在读取时恢复普通处置，`top_used` 仍为 true，再转人直接发卡片。只有失败未达两次的终审重试及尚未派出的入口/undispatched 回执保留 `top`。终审不直接写 Done、合并或自动批准取消，gate、审查、CI 与 lane 3 约束保持不变。
 
@@ -619,7 +619,7 @@ orca-factory-driver gear clear OF
 启用后，调度器在飞书转人卡片发送前重读票据和评论。最新 `resolver-state` 必须仍是本次 `human`，且申请是 `action=escalate`、`class=scope-extension` 的非空 `scope` 数组。自动批准沿用人工扩 SCOPE 的校验：票未取消、有 SCOPE 和 LANE 预判、不属 lane 3、合并证据有效且部署屏障未暂停。另须同时满足：
 
 - 所有路径通过现有 `scopeAddition` 的仓库内字面路径校验，不命中 `AGENT_LANE3_GLOBS`。
-- 每次不超过 10 个路径，每张票累计自动批准不超过 2 次。次数从账本中以 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 或 `扩SCOPE：worker-auto ` 开头的评论合计恢复，重启不重置。
+- 每次不超过 10 个路径，每张票累计自动批准不超过 4 次。次数从账本中以 `扩SCOPE：auto `、`扩SCOPE：top-resolver ` 或 `扩SCOPE：worker-auto ` 开头的评论合计恢复，重启不重置。
 - 不触及 `.github/`、`core/gate.sh`、`scripts/agent-gates/gate*.sh`、`scripts/agent-gates/agent-graph.env`、`driver/deploy/`、根 `Makefile`、任意层级的 `.env*` 或 `*secrets*`。
 
 批准与人工批复共用 `intake.applyScopeReview`：先扩票面 SCOPE，再写一条评论，不发卡片。评论格式为 `扩SCOPE：auto <RFC3339 时间>\n条件：<满足的条件和本次计数>\n路径：<路径...>\nresolver-state {"version":1,"attempt":<本次 attempt>,"phase":"waiting"}`。未满足条件时仍发人工卡片，注明“未自动批准”及原因。读写失败返回错误，后续巡检重读账本后重试；若票面已改而评论未写成，重试不会重复添加路径。无需配置通知群也可自动批准。

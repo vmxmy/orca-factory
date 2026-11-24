@@ -85,7 +85,7 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 		{name: "auto docs", mode: "auto", files: docs, approved: true},
 		{name: "control files", mode: "auto", files: "core/gate.sh scripts/agent-gates/gate.sh"},
 		{name: "eleven paths", mode: "auto", files: "a.go b.go c.go d.go e.go f.go g.go h.go i.go j.go k.go"},
-		{name: "two approvals", mode: "auto", files: docs, prior: true},
+		{name: "four approvals", mode: "auto", files: docs, prior: true},
 		{name: "frozen merge spec", mode: "auto", files: docs, frozen: true},
 		{name: "manual docs", mode: "manual", files: docs},
 		{name: "auto overridden manual", mode: "auto", gear: "manual", files: docs},
@@ -126,7 +126,7 @@ func TestWorkerScopeBlockedAutoRule(t *testing.T) {
 			store := &scopeIssues{budgetIssues: ledger, description: face}
 			e.Issues = store
 			if tc.prior {
-				ledger.comments = []string{"扩SCOPE：auto 2026-11-21T00:00:00Z", "扩SCOPE：worker-auto 2026-11-21T01:00:00Z\n路径：docs/previous.md"}
+				ledger.comments = []string{"扩SCOPE：auto 2026-11-21T00:00:00Z", "扩SCOPE：worker-auto 2026-11-21T01:00:00Z\n路径：docs/previous.md", "扩SCOPE：top-resolver 2026-11-21T02:00:00Z", "扩SCOPE：auto 2026-11-21T03:00:00Z"}
 			}
 			initialComments := len(ledger.comments)
 			o.failFirst = true

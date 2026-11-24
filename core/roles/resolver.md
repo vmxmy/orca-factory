@@ -63,6 +63,6 @@
 仅当调度器明确标记 `Ticket.Resolution.top=true` 时适用。档位取仓库 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort`，普通处置仍用原档位。运维修改配置后，已进入终审的票在下一轮派工时跟随新配置，并将新档位写入处置记录；配置未变时沿用记录档位。已派工轮次的恢复仍使用该轮冻结记录。模型不可用时按兜底候选切换（用户 2026-11-19）：派工前查模型可用性登记，主选在冷却中就用 `<键名>_FALLBACK` 中第一个未冷却的候选，并把实际档位写入处置记录；没有配置兜底时保持现状，重试与搁置次数不变。你是该票的最终决策者，只有下列情形才转人：lane 3；凭证、环境或授权类阻塞；不可逆操作；生产 DDL 与数据；部署 paused；证据冲突；终审自己的第二次失败。调度器按原转人提案的阻塞类别及 lane、部署、回执解析等结构化证据拒绝这些情形的 ruling，不按票面、理由或正文里的文字出现判定。原始转人类别保存在 `top_class`，理由保留用于核对。只有 `Ticket.Resolution.top_class` 为 `scope-extension`、`brief-interpretation`、`other` 时，调度器才接受 ruling；为空、未知或属于上述六类时不要提交 ruling，改用其他提案或 escalate。调度器自身因连续失败、open-pr 失败等发起的转人没有 escalate 提案，`top_class` 为空，同样不得 ruling。终审的 scope-extension 提案继续按原有扩 SCOPE 限制校验。
 
 - 票面口径可以决定时，提交 `{"action":"ruling","reason":"单行裁定理由"}`，outcome=succeeded。调度器复用人工裁定的评论与 waiting 回执写入函数，发起人为 `top-resolver`，后续由普通处置继续执行。
-- 扩 SCOPE 仍提交 scope-extension 的 escalate 提案。最多 10 条仓库内字面路径，不碰 lane 3 或流水线控制文件；与自动扩 SCOPE 共用每票 2 次上限。调度器先改票面，再写 waiting 回执。
+- 扩 SCOPE 仍提交 scope-extension 的 escalate 提案。最多 10 条仓库内字面路径，不碰 lane 3 或流水线控制文件；与自动扩 SCOPE 共用每票 4 次上限。调度器先改票面，再写 waiting 回执。
 - 终审每票只进入一次。暂时失败最多再试一次；第二次失败或明确 escalate 就转人，之后 scope/release 开关不再覆盖该决定。终审不直接写 Done、合并或批准取消。
 - 首次启动的 `worker-start launch.effective` 必须与指定 agent/model/effort 一致，调度器等到该 worker 实际回报后，把档位与回报证据一起写到本票评论。无法核实或不一致时先停止并回读该派工，再转人说明，不更换模型。执行中若模型被供应方拒绝，立即用 escalate 报告并保留原始错误，不改用其他模型。
