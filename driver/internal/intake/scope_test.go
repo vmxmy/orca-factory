@@ -66,7 +66,7 @@ func TestAutoScopePersistsLimitAndRetries(t *testing.T) {
 	if len(h.ledger.edits) != 1 || len(h.ledger.events["canon-of12"]) != 2 {
 		t.Fatalf("retry duplicated writes: %+v", h.ledger)
 	}
-	for attempt := 8; attempt <= 9; attempt++ {
+	for attempt := 8; attempt <= 11; attempt++ {
 		result := fmt.Sprintf(`{"action":"escalate","class":"scope-extension","reason":"scope","body":"proof","scope":["new%d.go"]}`, attempt)
 		raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: attempt, Phase: "human", Result: result})
 		if err != nil {
@@ -78,14 +78,14 @@ func TestAutoScopePersistsLimitAndRetries(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if attempt == 8 && refusal != "" {
+		if attempt < 11 && refusal != "" {
 			t.Fatal(refusal)
 		}
-		if attempt == 9 && !strings.Contains(refusal, "2 次") {
-			t.Fatalf("third request: %q", refusal)
+		if attempt == 11 && !strings.Contains(refusal, "4 次") {
+			t.Fatalf("fifth request: %q", refusal)
 		}
 	}
-	if len(h.ledger.edits) != 2 {
+	if len(h.ledger.edits) != 4 {
 		t.Fatalf("edits=%v", h.ledger.edits)
 	}
 }
@@ -201,7 +201,19 @@ func TestWorkerAutoScopeAuditPreservesEvidenceAndCountsAcrossStages(t *testing.T
 		t.Fatalf("worker approval not counted: %q", events)
 	}
 	approved, err := AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/third.md"}, "", h.g.now())
-	if err != nil || approved {
+	if err != nil || !approved {
 		t.Fatalf("third approval: approved=%v err=%v", approved, err)
+	}
+	approved, err = AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/fourth.md"}, "", h.g.now())
+	if err != nil || !approved {
+		t.Fatalf("fourth approval: approved=%v err=%v", approved, err)
+	}
+	events = h.ledger.events["canon-of12"]
+	if !strings.Contains(events[len(events)-1], "第 4 次自动批准") {
+		t.Fatalf("fourth approval missing from audit: %q", events)
+	}
+	approved, err = AutoApproveWorkerScope(ctx, h.ledger, "OF-12", []string{"docs/fifth.md"}, "", h.g.now())
+	if err != nil || approved {
+		t.Fatalf("fifth approval: approved=%v err=%v", approved, err)
 	}
 }

@@ -171,8 +171,8 @@ func TestAutoModeScopeRequestApprovedAfterTopUsed(t *testing.T) {
 		previous []string
 	}{
 		{name: "approved after top used"},
-		{name: "auto approval limit parks", previous: []string{"auto", "auto"}},
-		{name: "shared approval limit parks", previous: []string{"auto", "top-resolver"}},
+		{name: "auto approval limit parks", previous: []string{"auto", "auto", "auto", "auto"}},
+		{name: "shared approval limit parks", previous: []string{"auto", "top-resolver", "worker-auto", "auto"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: 3, Phase: "result", Outcome: "failed", Result: string(decision), TopUsed: true, Top: false})
@@ -195,7 +195,7 @@ func TestAutoModeScopeRequestApprovedAfterTopUsed(t *testing.T) {
 			if !after.Resolution.TopUsed || after.Resolution.Top {
 				t.Fatalf("top history changed: %+v", after.Resolution)
 			}
-			if len(tc.previous) == 2 {
+			if len(tc.previous) == 4 {
 				assertParked(t, &store.labelStore, ticket)
 				if store.description != face || slices.ContainsFunc(store.comments, func(body string) bool { return strings.HasPrefix(body, "扩SCOPE：") }) {
 					t.Fatalf("exhausted scope approved: face=%q comments=%q", store.description, store.comments)
