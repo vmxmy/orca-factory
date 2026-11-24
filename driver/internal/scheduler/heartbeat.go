@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -46,7 +47,7 @@ func (s *Scheduler) heartbeat(ctx context.Context, t Ticket, problems *[]error) 
 	switch verdict {
 	case orca.LivenessDead:
 		if err := backend.ReapDead(ctx, t); err != nil {
-			*problems = append(*problems, errors.New("dead process reap failed: "+t.Identifier))
+			*problems = append(*problems, fmt.Errorf("dead process reap failed: %s: %w", t.Identifier, err))
 			return beatSkip
 		}
 		return beatRecover
