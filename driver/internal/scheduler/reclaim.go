@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -179,6 +180,14 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 }
 
 func (r *Runtime) removeWorkspace(ctx context.Context, v Verdict, terminals []orca.Terminal, listings []repositoryWorkspaces, logger *slog.Logger) []string {
+	marker := ""
+	if r.StateRoot != "" {
+		hashPath := fmt.Sprintf("%x", sha256.Sum256([]byte(v.Path)))[:16]
+		marker = filepath.Join(r.StateRoot, "reclaim-gave-up", hashPath)
+		if _, err := os.Stat(marker); err == nil {
+			return []string{"remove-failed-giving-up"}
+		}
+	}
 	if r.reclaimFailures[v.Path] >= maxReclaimFailures {
 		return []string{"remove-failed-giving-up"}
 	}
@@ -211,6 +220,11 @@ func (r *Runtime) removeWorkspace(ctx context.Context, v Verdict, terminals []or
 		}
 		r.reclaimFailures[v.Path]++
 		if r.reclaimFailures[v.Path] >= maxReclaimFailures {
+			if marker != "" {
+				if err := os.MkdirAll(filepath.Dir(marker), 0700); err == nil {
+					_ = os.WriteFile(marker, nil, 0600)
+				}
+			}
 			return []string{"remove-failed-giving-up"}
 		}
 		return []string{"remove-failed"}

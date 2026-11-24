@@ -138,6 +138,57 @@ func TestReclaimWorktreeRmRuntimeErrorCounts(t *testing.T) {
 	}
 }
 
+func TestReclaimFailurePersistsAcrossRestart(t *testing.T) {
+	const path = "/ws/OF-677-executor"
+	root := t.TempDir()
+	marker := filepath.Join(root, "reclaim-gave-up", "fb65df4136854e27")
+	calls := 0
+	fake := &fakeWorkspaces{onRemove: func(string) error {
+		calls++
+		return &orca.RejectedError{Code: "runtime_error"}
+	}}
+	v := Verdict{Workspace: Workspace{Path: path}}
+	logger := slog.New(slog.DiscardHandler)
+	first := &Runtime{StateRoot: root, Workspaces: fake}
+	for i := 1; i <= maxReclaimFailures; i++ {
+		want := "remove-failed"
+		if i == maxReclaimFailures {
+			want = "remove-failed-giving-up"
+		}
+		if blocks := first.removeWorkspace(t.Context(), v, nil, nil, logger); !slices.Equal(blocks, []string{want}) || calls != i {
+			t.Fatalf("attempt %d: blocks=%v calls=%d; want %s and %d", i, blocks, calls, want, i)
+		}
+		if i < maxReclaimFailures {
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("marker before threshold: %v", err)
+			}
+		}
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("marker after threshold: %v", err)
+	}
+	second := &Runtime{StateRoot: root, Workspaces: fake}
+	if blocks := second.removeWorkspace(t.Context(), v, nil, nil, logger); !slices.Equal(blocks, []string{"remove-failed-giving-up"}) || calls != maxReclaimFailures {
+		t.Fatalf("after restart: blocks=%v calls=%d; want giving up without another removal", blocks, calls)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	third := &Runtime{StateRoot: root, Workspaces: fake}
+	for i := 1; i <= maxReclaimFailures; i++ {
+		want := "remove-failed"
+		if i == maxReclaimFailures {
+			want = "remove-failed-giving-up"
+		}
+		if blocks := third.removeWorkspace(t.Context(), v, nil, nil, logger); !slices.Equal(blocks, []string{want}) || calls != maxReclaimFailures+i {
+			t.Fatalf("after marker removal, attempt %d: blocks=%v calls=%d; want %s and %d", i, blocks, calls, want, maxReclaimFailures+i)
+		}
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("marker after reaching threshold again: %v", err)
+	}
+}
+
 func TestReclaimClosesIdleTerminals(t *testing.T) {
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	for _, state := range []string{"Done", "Canceled"} {
