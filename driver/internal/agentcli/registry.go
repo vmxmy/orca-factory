@@ -93,17 +93,20 @@ func expand(template []string, model, effort, prompt, dir string, omitEmpty bool
 	sub := strings.NewReplacer("{model}", model, "{effort}", effort, "{prompt}", prompt, "{dir}", dir)
 	args := make([]string, 0, len(template))
 	options := true
-	for i, arg := range template {
+	previousOption := false
+	for _, arg := range template {
 		if arg == "--" {
 			options = false
 		}
 		if omitEmpty && ((model == "" && strings.Contains(arg, "{model}")) || (effort == "" && strings.Contains(arg, "{effort}"))) {
-			if options && !strings.HasPrefix(arg, "-") && i > 0 && len(args) > 0 && strings.HasPrefix(template[i-1], "-") && !strings.ContainsAny(template[i-1], "={}") {
+			if previousOption && !strings.HasPrefix(arg, "-") {
 				args = args[:len(args)-1]
 			}
+			previousOption = false
 			continue
 		}
 		args = append(args, sub.Replace(arg))
+		previousOption = options && len(arg) > 1 && arg[0] == '-' && !strings.ContainsAny(arg, "={}")
 	}
 	return args
 }
@@ -125,7 +128,8 @@ func (p Profile) CorrectionStdin() bool {
 	return true
 }
 
-const shellWordPattern = `[a-zA-Z0-9_.,/@%+=:-]+`
+// A leading tilde or hash has shell syntax; inside an argument both are literal.
+const shellWordPattern = `[\pL\pM\pN_.,/@%+=:-][\pL\pM\pN_.,/@%+=:~#!^-]*`
 
 var shellWord = regexp.MustCompile("^" + shellWordPattern + "$")
 

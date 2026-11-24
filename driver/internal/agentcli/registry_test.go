@@ -340,6 +340,13 @@ func TestProbeKeepsOperandsAfterOptionTerminator(t *testing.T) {
 	}
 }
 
+func TestProbeKeepsStdinOperand(t *testing.T) {
+	p := agentcli.Profile{ProbeArgs: []string{"-", "{model}", "--print"}}
+	if got := p.ProbeArgv("", "", "ping"); !slices.Equal(got, []string{"-", "--print", "ping"}) {
+		t.Fatalf("default probe arguments = %q", got)
+	}
+}
+
 func TestLoadKeepsExplicitRegistration(t *testing.T) {
 	const name = "registered-extension"
 	agentcli.Register(agentcli.Profile{Name: name, Binary: "extension"})
@@ -366,13 +373,15 @@ func TestClaudeExtendedContextReviewer(t *testing.T) {
 	}
 }
 
-func TestClaudeReviewerPercentEncodedModel(t *testing.T) {
-	const original = "claude -p --model team%2Fopus --effort high --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"
-	want := modelhealth.Ref{Agent: "claude", Model: "team%2Fopus", Effort: "high"}
-	if command, err := config.GenerateReviewerCommand(want.String()); err != nil || command != original {
-		t.Errorf("reviewer command = %q, %v; want %q", command, err, original)
-	}
-	if got, ok := config.ReviewerRef(original); !ok || got != want {
-		t.Errorf("original reviewer ref = %+v, %t; want %+v", got, ok, want)
+func TestClaudeReviewerLiteralModel(t *testing.T) {
+	for _, name := range []string{"team%2Fopus", "team~opus", "team#opus"} {
+		original := "claude -p --model " + name + " --effort high --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"
+		want := modelhealth.Ref{Agent: "claude", Model: name, Effort: "high"}
+		if command, err := config.GenerateReviewerCommand(want.String()); err != nil || command != original {
+			t.Errorf("reviewer command = %q, %v; want %q", command, err, original)
+		}
+		if got, ok := config.ReviewerRef(original); !ok || got != want {
+			t.Errorf("original reviewer ref = %+v, %t; want %+v", got, ok, want)
+		}
 	}
 }
