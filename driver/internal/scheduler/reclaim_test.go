@@ -64,6 +64,80 @@ func (f *fakeWorkspaces) TerminalClose(_ context.Context, handle string) error {
 	return err
 }
 
+func TestReclaimWorktreeRmRuntimeErrorCounts(t *testing.T) {
+	type step struct {
+		fail  bool
+		block string
+		calls int
+	}
+	for _, tc := range []struct {
+		name  string
+		steps []step
+	}{
+		{"giving up", []step{
+			{true, "remove-failed", 1},
+			{true, "remove-failed", 2},
+			{true, "remove-failed", 3},
+			{true, "remove-failed", 4},
+			{true, "remove-failed-giving-up", 5},
+			{true, "remove-failed-giving-up", 5},
+			{true, "remove-failed-giving-up", 5},
+		}},
+		{"success", []step{{false, "", 1}}},
+		{"success resets failures", []step{
+			{true, "remove-failed", 1},
+			{true, "remove-failed", 2},
+			{true, "remove-failed", 3},
+			{true, "remove-failed", 4},
+			{false, "", 5},
+			{true, "remove-failed", 6},
+			{true, "remove-failed", 7},
+			{true, "remove-failed", 8},
+			{true, "remove-failed", 9},
+			{true, "remove-failed-giving-up", 10},
+			{true, "remove-failed-giving-up", 10},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const path = "/ws/OF-672-executor"
+			fake := &fakeWorkspaces{repoTrees: map[string][]orca.Worktree{}}
+			runtime := &Runtime{
+				Repositories: map[string]config.Repository{"/repo": {Path: "/repo"}},
+				Workspaces:   fake,
+				closed:       map[string]map[string]closedTicket{"/repo": {"OF-672": {State: "Done"}}},
+				Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
+					if spec.Args[0] == "rev-list" {
+						return []byte("0\n"), nil
+					}
+					return nil, nil
+				},
+			}
+			calls := 0
+			for i, step := range tc.steps {
+				fake.repoTrees["/repo"] = []orca.Worktree{{Path: path}}
+				fake.onRemove = func(string) error {
+					calls++
+					if step.fail {
+						return &orca.RejectedError{Code: "runtime_error"}
+					}
+					return nil
+				}
+				verdicts, err := runtime.ReclaimWorkspaces(context.Background(), false, slog.New(slog.DiscardHandler))
+				if err != nil || len(verdicts) != 1 {
+					t.Fatalf("step %d: verdicts=%+v err=%v", i+1, verdicts, err)
+				}
+				var want []string
+				if step.block != "" {
+					want = []string{step.block}
+				}
+				if !slices.Equal(verdicts[0].Blocks, want) || calls != step.calls {
+					t.Errorf("step %d: blocks=%v calls=%d; want blocks=%v calls=%d", i+1, verdicts[0].Blocks, calls, want, step.calls)
+				}
+			}
+		})
+	}
+}
+
 func TestReclaimClosesIdleTerminals(t *testing.T) {
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	for _, state := range []string{"Done", "Canceled"} {
