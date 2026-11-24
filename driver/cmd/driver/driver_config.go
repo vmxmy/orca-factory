@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -39,6 +40,7 @@ const (
 
 // configSnapshot is driver-config-v1 (driver/CONTRACTS.md「driver config 快照」).
 type configSnapshot struct {
+	Agents      []string       `json:"agents"`
 	Schema      string         `json:"schema"`
 	GeneratedAt time.Time      `json:"generatedAt"`
 	Overview    configOverview `json:"overview"`
@@ -192,6 +194,7 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 		s.Problems = append(s.Problems, "driver 配置无法加载（"+err.Error()+"），调度项与仓库未列出")
 		return s
 	}
+	s.Agents = agentcli.List()
 	s.Overview.FactoryRoot = cfg.FactoryRoot
 	s.Scheduler = schedulerEntries(home, cfg, &s.Problems)
 	result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
@@ -246,13 +249,14 @@ func schedulerEntries(home string, cfg config.Config, problems *[]string) []conf
 	data, err := os.ReadFile(filepath.Join(home, ".config", "orca-factory", "driver.toml"))
 	if err == nil {
 		var shape struct {
-			MaxInFlight int                `toml:"max_in_flight"`
-			FactoryRoot string             `toml:"factory_root"`
-			TokenBucket config.TokenBucket `toml:"token_bucket"`
-			Scheduler   *config.Scheduler  `toml:"scheduler"`
-			GitHub      *config.GitHub     `toml:"github"`
-			Orca        *config.Orca       `toml:"orca"`
-			Ledger      *config.Ledger     `toml:"ledger"`
+			Agents      map[string]config.AgentDef `toml:"agents"`
+			MaxInFlight int                        `toml:"max_in_flight"`
+			FactoryRoot string                     `toml:"factory_root"`
+			TokenBucket config.TokenBucket         `toml:"token_bucket"`
+			Scheduler   *config.Scheduler          `toml:"scheduler"`
+			GitHub      *config.GitHub             `toml:"github"`
+			Orca        *config.Orca               `toml:"orca"`
+			Ledger      *config.Ledger             `toml:"ledger"`
 		}
 		if meta, err = toml.Decode(string(data), &shape); err != nil {
 			*problems = append(*problems, "driver.toml 无法解析，调度项来源按默认值标注")

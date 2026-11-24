@@ -50,15 +50,15 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, errors.New("cannot locate repository")
 	}
 	repo := strings.TrimSpace(string(b))
+	cfg, err := config.Load(home())
+	if err != nil {
+		return Result{}, errors.New("driver configuration could not be loaded")
+	}
 	e, storeEnv, err := repositoryExecutor(ctx, repo)
 	if err != nil {
 		return Result{}, err
 	}
 	e.Config.Terminal = terminal
-	cfg, err := config.Load(home())
-	if err != nil {
-		return Result{}, errors.New("driver configuration could not be loaded")
-	}
 	store, err := issues.New(ctx, storeEnv, cfg.Tuning)
 	if err != nil {
 		return Result{}, err
