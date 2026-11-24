@@ -333,6 +333,13 @@ func TestProbeKeepsFlagBeforeOmittedInlineModel(t *testing.T) {
 	}
 }
 
+func TestProbeKeepsOperandsAfterOptionTerminator(t *testing.T) {
+	p := agentcli.Profile{ProbeArgs: []string{"--sandbox", "--", "{model}", "--literal", "{effort}"}}
+	if got := p.ProbeArgv("", "", "ping"); !slices.Equal(got, []string{"--sandbox", "--", "--literal", "ping"}) {
+		t.Fatalf("default probe arguments = %q", got)
+	}
+}
+
 func TestLoadKeepsExplicitRegistration(t *testing.T) {
 	const name = "registered-extension"
 	agentcli.Register(agentcli.Profile{Name: name, Binary: "extension"})
@@ -356,5 +363,16 @@ func TestClaudeExtendedContextReviewer(t *testing.T) {
 	}
 	if config.RelayReviewer(original, true) {
 		t.Error("extended-context alias passed the relay literal check")
+	}
+}
+
+func TestClaudeReviewerPercentEncodedModel(t *testing.T) {
+	const original = "claude -p --model team%2Fopus --effort high --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"
+	want := modelhealth.Ref{Agent: "claude", Model: "team%2Fopus", Effort: "high"}
+	if command, err := config.GenerateReviewerCommand(want.String()); err != nil || command != original {
+		t.Errorf("reviewer command = %q, %v; want %q", command, err, original)
+	}
+	if got, ok := config.ReviewerRef(original); !ok || got != want {
+		t.Errorf("original reviewer ref = %+v, %t; want %+v", got, ok, want)
 	}
 }

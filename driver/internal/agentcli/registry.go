@@ -25,7 +25,7 @@ type Profile struct {
 var registered = map[string]Profile{
 	"claude": {
 		Name: "claude", Relay: true,
-		unquotedModel:  regexp.MustCompile(`^[A-Za-z0-9._/@+-]+\[1m\]$`),
+		unquotedModel:  regexp.MustCompile("^" + shellWordPattern + `\[1m\]$`),
 		ProbeArgs:      []string{"-p", "--model", "{model}", "--tools", "", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"},
 		ReviewArgs:     strings.Fields("-p --model {model} --effort {effort} --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"),
 		CorrectionArgs: strings.Fields("-p {prompt} --model {model} --effort {effort} --permission-mode acceptEdits --add-dir {dir} --allowedTools Read,Grep,Glob,Write,Edit --tools Read,Grep,Glob,Write,Edit"),
@@ -92,9 +92,13 @@ func (p Profile) Executable() string { return cmp.Or(p.Binary, p.Name) }
 func expand(template []string, model, effort, prompt, dir string, omitEmpty bool) []string {
 	sub := strings.NewReplacer("{model}", model, "{effort}", effort, "{prompt}", prompt, "{dir}", dir)
 	args := make([]string, 0, len(template))
+	options := true
 	for i, arg := range template {
+		if arg == "--" {
+			options = false
+		}
 		if omitEmpty && ((model == "" && strings.Contains(arg, "{model}")) || (effort == "" && strings.Contains(arg, "{effort}"))) {
-			if !strings.HasPrefix(arg, "-") && i > 0 && len(args) > 0 && strings.HasPrefix(template[i-1], "-") && !strings.ContainsAny(template[i-1], "={}") {
+			if options && !strings.HasPrefix(arg, "-") && i > 0 && len(args) > 0 && strings.HasPrefix(template[i-1], "-") && !strings.ContainsAny(template[i-1], "={}") {
 				args = args[:len(args)-1]
 			}
 			continue
@@ -121,7 +125,9 @@ func (p Profile) CorrectionStdin() bool {
 	return true
 }
 
-var shellWord = regexp.MustCompile(`^[a-zA-Z0-9_.,/@+=:-]+$`)
+const shellWordPattern = `[a-zA-Z0-9_.,/@%+=:-]+`
+
+var shellWord = regexp.MustCompile("^" + shellWordPattern + "$")
 
 func quote(arg string) string {
 	if shellWord.MatchString(arg) {
@@ -155,7 +161,7 @@ func (p Profile) MatchReviewerCommand(command string) (model, effort string, ok 
 	for _, m := range []string{modelMark, ""} {
 		for _, e := range []string{effortMark, ""} {
 			pattern := regexp.QuoteMeta(p.ReviewerCommand(m, e))
-			pattern = strings.NewReplacer(modelMark, `(?P<m>[A-Za-z0-9._/@+-]+(?:\[1m\])?)`, effortMark, "(?P<e>[A-Za-z0-9._/@+-]+)").Replace(pattern)
+			pattern = strings.NewReplacer(modelMark, "(?P<m>"+shellWordPattern+`(?:\[1m\])?)`, effortMark, "(?P<e>"+shellWordPattern+")").Replace(pattern)
 			re := regexp.MustCompile("^" + pattern + "$")
 			match := re.FindStringSubmatch(command)
 			if match == nil {
