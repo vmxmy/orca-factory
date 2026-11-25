@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -36,6 +37,9 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 		{name: "invalid fallback uses default", fallbackEnv: "invalid", unavailable: []modelhealth.Ref{primary}, wantCalls: []modelhealth.Ref{fallback}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ANTHROPIC_BASE_URL", "https://inherited.invalid")
+			t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
+
 			t.Setenv("AGENT_CORRECTION", tc.primaryEnv)
 			t.Setenv("AGENT_CORRECTION_FALLBACK", tc.fallbackEnv)
 			state := t.TempDir()
@@ -106,6 +110,12 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			}
 			for i, want := range tc.wantCalls {
 				spec := calls[i]
+				for _, entry := range []string{"ANTHROPIC_BASE_URL=https://inherited.invalid", "ANTHROPIC_AUTH_TOKEN=sentinel"} {
+					if slices.Contains(spec.Env, entry) != (want.Agent == "claude") {
+						t.Errorf("unexpected relay environment for %s", want.Agent)
+					}
+				}
+
 				mode, flags := "-p", map[string]string{"--model": want.Model, "--effort": want.Effort}
 				if want.Agent == "codex" {
 					if spec.Path != "/bin/sh" || len(spec.Args) < 5 {
@@ -198,4 +208,68 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			t.Errorf("primary after STALLED and weekly limit: %+v", status)
 		}
 	})
+}
+
+func TestReviewerRelayChangesWithCandidate(t *testing.T) {
+	const proxy = "https://configured.invalid"
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://inherited.invalid")
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, order := range [][]string{{"claude", "codex"}, {"codex", "claude"}} {
+		refs := []modelhealth.Ref{{Agent: order[0], Model: "first", Effort: "high"}, {Agent: order[1], Model: "second", Effort: "high"}}
+		command, err := config.GenerateReviewerCommand(refs[0].String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		c := Commands{ReviewerCommand: command, ReviewerCandidates: refs, StateRoot: t.TempDir(), ModelProxyURL: proxy}
+		c.Run = withReviewerRole(t, func(_ context.Context, s runx.Spec) ([]byte, error) {
+			if s.Path != "/bin/sh" {
+				return nil, nil
+			}
+			agent := order[calls]
+			calls++
+			for _, entry := range []string{"ANTHROPIC_BASE_URL=" + proxy, "ANTHROPIC_AUTH_TOKEN=sentinel"} {
+				if slices.Contains(s.Env, entry) != (agent == "claude") {
+					t.Errorf("wrong relay environment for %s on call %d", agent, calls)
+				}
+			}
+			if agent == "codex" && slices.Contains(s.Env, "ANTHROPIC_BASE_URL=https://inherited.invalid") {
+				t.Error("non-relay reviewer inherited the proxy URL")
+			}
+			if calls == 1 {
+				return limit, errors.New("model unavailable")
+			}
+			return nil, nil
+		})
+		if _, _, err := c.Review(t.Context(), t.TempDir(), "origin/main", "HEAD", nil); err != nil || calls != 2 {
+			t.Fatalf("review calls=%d, err=%v", calls, err)
+		}
+	}
+}
+
+func TestReviewerWithoutCandidatesUsesProfileRelay(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
+	command, err := config.GenerateReviewerCommand("codex::")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const proxy = "https://configured.invalid"
+	c := Commands{ReviewerCommand: command, ModelProxyURL: proxy}
+	called := false
+	c.Run = withReviewerRole(t, func(_ context.Context, s runx.Spec) ([]byte, error) {
+		if s.Path == "/bin/sh" {
+			called = true
+			if s.Env == nil || slices.Contains(s.Env, "ANTHROPIC_AUTH_TOKEN=sentinel") || slices.Contains(s.Env, "ANTHROPIC_BASE_URL="+proxy) {
+				t.Error("non-relay reviewer received relay settings")
+			}
+		}
+		return nil, nil
+	})
+	if _, _, err := c.Review(t.Context(), t.TempDir(), "origin/main", "HEAD", nil); err != nil || !called {
+		t.Fatalf("review called=%t, err=%v", called, err)
+	}
 }

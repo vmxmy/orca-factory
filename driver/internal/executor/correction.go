@@ -74,6 +74,10 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 			return errors.New("all correction model candidates unavailable")
 		}
 	}
+	profile, ok := agentcli.Lookup(ref.Agent)
+	if !ok {
+		return fmt.Errorf("unsupported correction agent %q", ref.Agent)
+	}
 	// A coordinator subprocess must not inherit this worker's Orca hooks.
 	env := make([]string, 0)
 	for _, entry := range os.Environ() {
@@ -82,11 +86,9 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 		case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN":
 			continue
 		}
-		env = append(env, entry)
-	}
-	profile, ok := agentcli.Lookup(ref.Agent)
-	if !ok {
-		return errors.New("correction agent must be claude or codex")
+		if profile.InheritEnv(key) {
+			env = append(env, entry)
+		}
 	}
 	spec := runx.Spec{Path: profile.Executable(), Args: profile.CorrectionArgv(ref.Model, ref.Effort, prompt, filepath.Dir(req.Path)),
 		Dir: req.Repo, Env: env, Timeout: 10 * time.Minute}

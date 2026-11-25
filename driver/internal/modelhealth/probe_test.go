@@ -161,3 +161,16 @@ func TestModelRelayProbe(t *testing.T) {
 		}
 	}
 }
+
+func TestProbeWithoutRelay(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "https://inherited.invalid")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
+	binary := filepath.Join(t.TempDir(), "probe")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n[ -z \"$ANTHROPIC_BASE_URL$ANTHROPIC_AUTH_TOKEN\" ] && printf ok\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	got := modelhealth.Probe(t.Context(), modelhealth.Ref{Agent: "codex"}, t.TempDir(), modelhealth.Endpoint{Binary: binary})
+	if got.State != modelhealth.OK {
+		t.Errorf("probe without relay: %s", got.State)
+	}
+}

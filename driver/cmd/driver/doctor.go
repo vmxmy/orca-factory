@@ -886,11 +886,19 @@ func (s doctorModelSettings) unprobedModels(reason string) healthCheck {
 // probeKey resolves an unset Binary on PATH, so the PATH agent and its absolute
 // path share one probe.
 func (r doctorModelRole) probeKey() string {
+	profile, _ := agentcli.Lookup(r.ref.Agent)
 	binary := r.endpoint.Binary
 	if binary == "" {
-		binary, _ = exec.LookPath(r.ref.Agent)
+		binary, _ = exec.LookPath(profile.Executable())
 	}
-	return strings.Join([]string{r.ref.Key(), binary, r.endpoint.BaseURL, r.endpoint.AuthToken, strconv.FormatBool(r.endpoint.Isolated)}, "\x00")
+	effort := ""
+	for _, arg := range profile.ProbeArgs {
+		if strings.Contains(arg, "{effort}") {
+			effort = r.ref.Effort
+			break
+		}
+	}
+	return strings.Join([]string{r.ref.Key(), effort, binary, r.endpoint.BaseURL, r.endpoint.AuthToken, strconv.FormatBool(r.endpoint.Isolated)}, "\x00")
 }
 
 func invalidModelRole(name, raw string) doctorModelRole {

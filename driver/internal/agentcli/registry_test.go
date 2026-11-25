@@ -254,6 +254,15 @@ func TestDriverUsesConfiguredAgent(t *testing.T) {
 				if !ok || exit.ExitCode() != 1 || !slices.Contains(strings.Split(string(out), "\n"), tc.message) || reads.Load()-before != tc.reads {
 					t.Fatalf("exec: %v, %d ticket reads; want exit 1, %q, %d reads\n%s", err, reads.Load()-before, tc.message, tc.reads, out)
 				}
+				if tc.agent == "agy" {
+					before := reads.Load()
+					raw, err := run("status", "--fresh", "--repo", repo, "--json")
+					var view struct{ State string }
+					if err != nil || json.Unmarshal(raw, &view) != nil || view.State != "ok" || reads.Load() == before {
+						t.Fatalf("fresh status: %v, reads=%d: %s", err, reads.Load()-before, raw)
+					}
+				}
+
 			})
 		}
 	})
@@ -416,7 +425,7 @@ func TestClaudeExtendedContextReviewer(t *testing.T) {
 }
 
 func TestClaudeReviewerLiteralModel(t *testing.T) {
-	for _, name := range []string{"team%2Fopus", "team~opus", "team#opus", "team·opus"} {
+	for _, name := range []string{"model{v2}", "team%2Fopus", "team~opus", "team#opus", "team·opus"} {
 		original := "claude -p --model " + name + " --effort high --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"
 		want := modelhealth.Ref{Agent: "claude", Model: name, Effort: "high"}
 		if command, err := config.GenerateReviewerCommand(want.String()); err != nil || command != original {
@@ -425,5 +434,22 @@ func TestClaudeReviewerLiteralModel(t *testing.T) {
 		if got, ok := config.ReviewerRef(original); !ok || got != want {
 			t.Errorf("original reviewer ref = %+v, %t; want %+v", got, ok, want)
 		}
+	}
+}
+
+func TestInlineAgentPrompt(t *testing.T) {
+	const prompt = "Reply with exactly: ok"
+	for _, template := range []string{"--print=" + prompt, "--print={prompt}"} {
+		p := agentcli.Profile{ProbeArgs: []string{template, "--effort", "{effort}"}}
+		if got := p.ProbeArgv("", "high", prompt); !slices.Equal(got, []string{"--print=" + prompt, "--effort", "high"}) {
+			t.Errorf("probe args = %q", got)
+		}
+	}
+	p := agentcli.Profile{Binary: "printf", ReviewArgs: []string{"%s", "--print={prompt}"}}
+	cmd := exec.Command("/bin/sh", "-c", p.ReviewerCommand("", ""))
+	const input = "two words 'quoted'\nnext line"
+	cmd.Stdin = strings.NewReader(input)
+	if out, err := cmd.CombinedOutput(); err != nil || string(out) != "--print="+input {
+		t.Errorf("reviewer argv: %q, %v", out, err)
 	}
 }

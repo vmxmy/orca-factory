@@ -99,6 +99,17 @@ func Names() []string {
 
 func (p Profile) Executable() string { return cmp.Or(p.Binary, p.Name) }
 
+// InheritEnv reports whether a child using this profile may inherit the key.
+func (p Profile) InheritEnv(key string) bool {
+	switch key {
+	case "AGENT_MODEL_PROXY_TOKEN":
+		return false
+	case "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN":
+		return p.Relay
+	}
+	return true
+}
+
 func expand(template []string, model, effort, prompt, dir string, omitEmpty bool) []string {
 	sub := strings.NewReplacer("{model}", model, "{effort}", effort, "{prompt}", prompt, "{dir}", dir)
 	args := make([]string, 0, len(template))
@@ -126,7 +137,13 @@ func expand(template []string, model, effort, prompt, dir string, omitEmpty bool
 }
 
 func (p Profile) ProbeArgv(model, effort, prompt string) []string {
-	return append(expand(p.ProbeArgs, model, effort, "", "", true), prompt)
+	args := expand(p.ProbeArgs, model, effort, prompt, "", true)
+	for _, arg := range p.ProbeArgs {
+		if strings.Contains(arg, "{prompt}") || arg == prompt || strings.HasSuffix(arg, "="+prompt) {
+			return args
+		}
+	}
+	return append(args, prompt)
 }
 
 func (p Profile) CorrectionArgv(model, effort, prompt, dir string) []string {
@@ -143,7 +160,7 @@ func (p Profile) CorrectionStdin() bool {
 }
 
 // A leading tilde or hash has shell syntax; inside an argument both are literal.
-const shellWordPattern = `[a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:^-][a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:~#!^-]*`
+const shellWordPattern = `[a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:^-](?:[a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:~#!^-]|\{[a-zA-Z0-9_-]+\})*`
 
 var shellWord = regexp.MustCompile("^" + shellWordPattern + "$")
 
@@ -161,8 +178,14 @@ func (p Profile) ReviewerCommand(model, effort string) string {
 	const stdin = "\x00"
 	args := expand(p.ReviewArgs, model, effort, stdin, "", true)
 	for _, arg := range args {
-		if arg == stdin {
-			words = append(words, `"$(cat)"`)
+		if strings.Contains(arg, stdin) {
+			parts := strings.Split(arg, stdin)
+			for i, part := range parts {
+				if part != "" {
+					parts[i] = quote(part)
+				}
+			}
+			words = append(words, strings.Join(parts, `"$(cat)"`))
 		} else if arg == model && p.unquotedModel != nil && p.unquotedModel.MatchString(model) {
 			words = append(words, model)
 		} else {

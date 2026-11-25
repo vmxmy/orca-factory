@@ -35,10 +35,12 @@ func Probe(ctx context.Context, ref Ref, dir string, endpoint Endpoint) Status {
 		for _, value := range os.Environ() {
 			key, _, _ := strings.Cut(value, "=")
 			switch key {
-			case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN", "AGENT_MODEL_PROXY_TOKEN":
+			case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN":
 				continue
 			}
-			env = append(env, value)
+			if profile.InheritEnv(key) {
+				env = append(env, value)
+			}
 		}
 	}
 	if profile.Relay && endpoint.BaseURL != "" {

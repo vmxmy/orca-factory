@@ -88,13 +88,13 @@ func ResolveReviewerCommands(env, sources map[string]string) (ReviewerCommands, 
 
 // ReviewerCandidates returns a structured reviewer role's configured model
 // followed by its FallbackKey candidates. It returns nil when the role is
-// configured by a command key or has no fallback.
+// configured by a command key.
 func ReviewerCandidates(env, sources map[string]string, structuredKey, commandKey string) ([]modelhealth.Ref, error) {
 	if ReviewerKey(env, sources, structuredKey, commandKey) != structuredKey {
 		return nil, nil
 	}
 	fallback, err := ParseFallback(env[FallbackKey(structuredKey)])
-	if err != nil || len(fallback) == 0 {
+	if err != nil {
 		return nil, wrapKey(FallbackKey(structuredKey), err)
 	}
 	primary, err := modelhealth.Parse(env[structuredKey])
