@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 )
 
@@ -18,36 +19,17 @@ type ReviewerCommands struct {
 }
 
 // GenerateReviewerCommand converts agent:model:effort into the command used by
-// the corresponding reviewer backend. Only the two supported reviewer agents
-// are accepted.
+// the corresponding reviewer backend.
 func GenerateReviewerCommand(value string) (string, error) {
 	ref, err := modelhealth.Parse(value)
 	if err != nil {
 		return "", fmt.Errorf("reviewer role requires agent:model:effort")
 	}
-	agent, model, effort := ref.Agent, ref.Model, ref.Effort
-	switch agent {
-	case "codex":
-		command := "env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN codex exec"
-		if model != "" {
-			command += " -m " + model
-		}
-		if effort != "" {
-			command += " -c model_reasoning_effort=" + effort
-		}
-		return command + " --sandbox read-only -", nil
-	case "claude":
-		command := "claude -p"
-		if model != "" {
-			command += " --model " + model
-		}
-		if effort != "" {
-			command += " --effort " + effort
-		}
-		return command + " --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config", nil
-	default:
-		return "", fmt.Errorf("unsupported reviewer agent %q", agent)
+	profile, ok := agentcli.Lookup(ref.Agent)
+	if !ok {
+		return "", fmt.Errorf("unsupported reviewer agent %q", ref.Agent)
 	}
+	return profile.ReviewerCommand(ref.Model, ref.Effort), nil
 }
 
 // ReviewerKey picks the key that configures one reviewer role: an explicit

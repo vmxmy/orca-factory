@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
@@ -1077,4 +1078,4 @@ func newestEvidence(comments []task.Comment) ([]task.Comment, int) {
 	return kept, len(comments) - len(kept)
 }
 
-func resolverAgent(ref modelhealth.Ref) bool { return ref.Agent == "codex" || ref.Agent == "claude" }
+func resolverAgent(ref modelhealth.Ref) bool { return agentcli.Registered(ref.Agent) }
