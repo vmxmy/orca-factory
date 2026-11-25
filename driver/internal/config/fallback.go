@@ -109,19 +109,19 @@ func MatchReviewer(command string) (modelhealth.Ref, agentcli.Profile, bool) {
 	var found modelhealth.Ref
 	var matched agentcli.Profile
 	for _, profile := range agentcli.List() {
-		model, effort, ok := profile.MatchReviewerCommand(command)
+		model, effort, ok, literal := profile.MatchReviewerCommand(command)
 		if !ok {
 			continue
 		}
-		ref, err := modelhealth.Parse(profile.Name + ":" + model + ":" + effort)
-		if err == nil {
-			if found.Agent != "" {
-				return modelhealth.Ref{}, agentcli.Profile{}, true
-			}
-			found, matched = ref, profile
+		if matched.Name != "" {
+			return modelhealth.Ref{}, agentcli.Profile{}, true
+		}
+		matched = profile
+		if literal {
+			found, _ = modelhealth.Parse(profile.Name + ":" + model + ":" + effort)
 		}
 	}
-	return found, matched, found.Agent != ""
+	return found, matched, matched.Name != ""
 }
 
 // ModelParked prefixes the 搁置 reason of a ticket parked because every model

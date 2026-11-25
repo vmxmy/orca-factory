@@ -258,7 +258,7 @@ func TestReviewerWithoutCandidatesUsesProfileRelay(t *testing.T) {
 		"remote": {Binary: "shared", ReviewArgs: []string{"--model", "{model}"}, Relay: true},
 	})
 	t.Cleanup(func() { agentcli.Configure(nil) })
-	for _, role := range []string{"codex::", "local:chosen:high"} {
+	for _, role := range []string{"codex::", "codex:model$[2]:high", "codex:model with spaces:high", "local:chosen:high"} {
 		t.Run(role, func(t *testing.T) {
 			t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
 			command, err := config.GenerateReviewerCommand(role)
@@ -309,6 +309,11 @@ func TestReviewerKeepsModelArgumentOnRetry(t *testing.T) {
 	c.Run = withReviewerRole(t, func(ctx context.Context, s runx.Spec) ([]byte, error) {
 		if s.Path != "/bin/sh" {
 			return nil, nil
+		}
+		ref := refs[len(models)]
+		wantArgv := []string{"claude", "-p", "--model", ref.Model, "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config"}
+		if !slices.Equal(s.Args[3:], wantArgv) {
+			t.Errorf("reviewer executable and arguments = %q, want %q", s.Args[3:], wantArgv)
 		}
 		s.Dir = dir
 		out, err := runx.Run(ctx, s)

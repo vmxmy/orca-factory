@@ -214,7 +214,7 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if err = os.WriteFile(name, []byte(input), 0o600); err != nil {
 		return "", tier, errors.New("review input write failed")
 	}
-	spec := runx.Spec{Path: "/bin/sh", Args: []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, name}, Dir: dir, Timeout: 10 * time.Minute}
+	spec := runx.Spec{Path: "/bin/sh", Args: config.ReviewerLaunchArgs(command, used, name), Dir: dir, Timeout: 10 * time.Minute}
 	profile, _ := agentcli.Lookup(used.Agent)
 	if len(candidates) == 0 {
 		var matched bool
@@ -235,9 +235,10 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if !retry {
 		return string(b), tier, err
 	}
-	if spec.Args[3], err = config.ReviewerShellCommand(next); err != nil {
+	if command, err = config.GenerateReviewerCommand(next.String()); err != nil {
 		return "", tier, errors.New("reviewer fallback command invalid")
 	}
+	spec.Args = config.ReviewerLaunchArgs(command, next, name)
 	profile, _ = agentcli.Lookup(next.Agent)
 	spec.Env = c.reviewerEnv(profile)
 	runx.LoggerFrom(ctx).Info("reviewer model unavailable; retrying with next candidate", "tier", tier, "unavailable", used.String(), "selected", next.String())

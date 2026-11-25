@@ -107,30 +107,34 @@ func ReviewerCandidates(env, sources map[string]string, structuredKey, commandKe
 	return append([]modelhealth.Ref{primary}, fallback...), nil
 }
 
-// ReviewerShellCommand renders a structured role for execution, preserving its argument boundaries.
-func ReviewerShellCommand(ref modelhealth.Ref) (string, error) {
-	profile, ok := agentcli.Lookup(ref.Agent)
-	if !ok {
-		return "", fmt.Errorf("unsupported reviewer agent %q", ref.Agent)
+// ReviewerLaunchArgs redirects stdin without letting the shell re-interpret
+// structured built-in arguments. Explicit command keys keep their shell syntax.
+func ReviewerLaunchArgs(command string, ref modelhealth.Ref, input string) []string {
+	profile, _ := agentcli.Lookup(ref.Agent)
+	if argv := profile.LiteralReviewerArgv(ref.Model, ref.Effort); argv != nil {
+		return append([]string{"-c", `exec "$@" < "$0"`, input}, argv...)
 	}
-	return profile.ReviewerShellCommand(ref.Model, ref.Effort), nil
+	return []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, input}
 }
 
-// SelectReviewerCommand leaves explicit shell commands intact and renders the selected structured candidate.
+// SelectReviewerCommand keeps command unless the registry marks candidates[0]
+// unavailable; then it returns the first available fallback's command and model.
 func SelectReviewerCommand(command string, candidates []modelhealth.Ref, stateRoot string, now time.Time) (string, modelhealth.Ref, error) {
 	if len(candidates) == 0 {
 		return command, modelhealth.Ref{}, nil
 	}
-	ref := candidates[0]
-	var selectionErr error
-	if stateRoot != "" {
-		ref, selectionErr = SelectModel(stateRoot, ref, candidates[1:], now)
+	if stateRoot == "" {
+		return command, candidates[0], nil
 	}
-	command, err := ReviewerShellCommand(ref)
+	ref, err := SelectModel(stateRoot, candidates[0], candidates[1:], now)
+	if ref == candidates[0] {
+		return command, ref, err
+	}
+	generated, err := GenerateReviewerCommand(ref.String())
 	if err != nil {
-		return "", ref, err
+		return command, candidates[0], err
 	}
-	return command, ref, selectionErr
+	return generated, ref, nil
 }
 
 func wrapKey(key string, err error) error {

@@ -193,11 +193,7 @@ func (p Profile) ReviewerCommand(model, effort string) string {
 		args := expand(p.ReviewArgs, model, effort, "", "", true)
 		return p.reviewPrefix + strings.Join(append([]string{p.Executable()}, args...), " ")
 	}
-	return p.ReviewerShellCommand(model, effort)
-}
 
-// ReviewerShellCommand quotes every argument for the shell that launches the reviewer.
-func (p Profile) ReviewerShellCommand(model, effort string) string {
 	words := []string{quote(p.Executable())}
 	// NUL cannot occur in an executable shell argument. Keep the stdin slot
 	// distinct from a literal role value such as "{prompt}".
@@ -223,14 +219,29 @@ func (p Profile) ReviewerShellCommand(model, effort string) string {
 	return prefix + strings.Join(words, " ")
 }
 
-// MatchReviewerCommand recovers literal role arguments only from a complete generated command.
-func (p Profile) MatchReviewerCommand(command string) (model, effort string, ok bool) {
+// LiteralReviewerArgv supplies the historical executable and arguments when
+// a shell would interpret a built-in role value in the historical command.
+func (p Profile) LiteralReviewerArgv(model, effort string) []string {
+	if !p.builtinReviewer || ((model == "" || quote(model) == model) && (effort == "" || quote(effort) == effort)) {
+		return nil
+	}
+	argv := append(strings.Fields(p.reviewPrefix), p.Executable())
+	return append(argv, expand(p.ReviewArgs, model, effort, "", "", true)...)
+}
+
+// MatchReviewerCommand identifies the generated command shape separately from whether its model can be recovered literally.
+func (p Profile) MatchReviewerCommand(command string) (model, effort string, matched, literal bool) {
 	const modelMark = "ORCA_MODEL_PLACEHOLDER"
 	const effortMark = "ORCA_EFFORT_PLACEHOLDER"
+	capture := `\S+`
+	if p.builtinReviewer {
+		// Historical built-in text embeds role values, including whitespace, verbatim.
+		capture = `(?s:.+?)`
+	}
 	for _, m := range []string{modelMark, ""} {
 		for _, e := range []string{effortMark, ""} {
 			pattern := regexp.QuoteMeta(p.ReviewerCommand(m, e))
-			pattern = strings.NewReplacer(modelMark, `(?P<m>\S+)`, effortMark, `(?P<e>\S+)`).Replace(pattern)
+			pattern = strings.NewReplacer(modelMark, "(?P<m>"+capture+")", effortMark, "(?P<e>"+capture+")").Replace(pattern)
 			re := regexp.MustCompile("^" + pattern + "$")
 			match := re.FindStringSubmatch(command)
 			if match == nil {
@@ -245,6 +256,9 @@ func (p Profile) MatchReviewerCommand(command string) (model, effort string, ok 
 			}
 			// A legacy shell command can only identify its model when the
 			// captured words are literal. Keep the established Claude alias.
+			if p.ReviewerCommand(model, effort) != command {
+				continue
+			}
 			if p.builtinReviewer {
 				literalModel := model
 				if p.extendedContext {
@@ -252,13 +266,11 @@ func (p Profile) MatchReviewerCommand(command string) (model, effort string, ok 
 				}
 				if (literalModel != "" && !builtinLiteral(literalModel, []string{model, effort})) ||
 					(effort != "" && !builtinLiteral(effort, []string{effort})) {
-					continue
+					return "", "", true, false
 				}
 			}
-			if p.ReviewerCommand(model, effort) == command {
-				return model, effort, true
-			}
+			return model, effort, true, true
 		}
 	}
-	return "", "", false
+	return "", "", false, false
 }
