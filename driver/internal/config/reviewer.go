@@ -107,24 +107,30 @@ func ReviewerCandidates(env, sources map[string]string, structuredKey, commandKe
 	return append([]modelhealth.Ref{primary}, fallback...), nil
 }
 
-// SelectReviewerCommand keeps command unless the registry marks candidates[0]
-// unavailable; then it returns the first available fallback's command and model.
+// ReviewerShellCommand renders a structured role for execution, preserving its argument boundaries.
+func ReviewerShellCommand(ref modelhealth.Ref) (string, error) {
+	profile, ok := agentcli.Lookup(ref.Agent)
+	if !ok {
+		return "", fmt.Errorf("unsupported reviewer agent %q", ref.Agent)
+	}
+	return profile.ReviewerShellCommand(ref.Model, ref.Effort), nil
+}
+
+// SelectReviewerCommand leaves explicit shell commands intact and renders the selected structured candidate.
 func SelectReviewerCommand(command string, candidates []modelhealth.Ref, stateRoot string, now time.Time) (string, modelhealth.Ref, error) {
 	if len(candidates) == 0 {
 		return command, modelhealth.Ref{}, nil
 	}
-	if stateRoot == "" {
-		return command, candidates[0], nil
+	ref := candidates[0]
+	var selectionErr error
+	if stateRoot != "" {
+		ref, selectionErr = SelectModel(stateRoot, ref, candidates[1:], now)
 	}
-	ref, err := SelectModel(stateRoot, candidates[0], candidates[1:], now)
-	if ref == candidates[0] {
-		return command, ref, err
-	}
-	generated, err := GenerateReviewerCommand(ref.String())
+	command, err := ReviewerShellCommand(ref)
 	if err != nil {
-		return command, candidates[0], err
+		return "", ref, err
 	}
-	return generated, ref, nil
+	return command, ref, selectionErr
 }
 
 func wrapKey(key string, err error) error {

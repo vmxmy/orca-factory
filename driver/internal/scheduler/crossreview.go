@@ -229,7 +229,7 @@ func (j crossReviewJob) execute(ctx context.Context) crossReviewRecord {
 					runx.LoggerFrom(ctx).Warn("cross review model error not recorded", "ticket", j.ticketID, "reviewer", reviewer.name, "err", modelErr)
 				}
 				if retry {
-					if spec.Args[3], runErr = config.GenerateReviewerCommand(next.String()); runErr == nil {
+					if spec.Args[3], runErr = config.ReviewerShellCommand(next); runErr == nil {
 						runx.LoggerFrom(ctx).Info("cross review model unavailable; retrying with next candidate", "ticket", j.ticketID, "reviewer", reviewer.name, "unavailable", reviewer.used.String(), "selected", next.String())
 						spec.Env = j.reviewerEnv(spec.Args[3], reviewer.structured)
 						if out, runErr = j.run(ctx, spec); runErr != nil {
@@ -482,6 +482,9 @@ func (r *Runtime) crossReviewCommand(ctx context.Context, repository config.Repo
 	}
 	selected, used, err := config.SelectReviewerCommand(command, candidates, r.StateRoot, now)
 	if err != nil {
+		if selected == "" {
+			return crossReviewer{}, err
+		}
 		runx.LoggerFrom(ctx).Warn("cross review model fallback unavailable; keeping configured model", "key", structuredKey, "err", err)
 	}
 	if len(candidates) > 0 && used != candidates[0] {

@@ -1646,3 +1646,27 @@ func TestModelParkedExecutorClaimIsNotRestored(t *testing.T) {
 		t.Fatalf("lifted park not restored: launched=%v", f.launched)
 	}
 }
+
+func TestCrossReviewKeepsModelArgumentOnRetry(t *testing.T) {
+	f := newCrossReviewFixture(t, "scope-extension", "src/model1")
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nprintf '%s\\n' \"$3\" >> \"$HOME/models\"\n" +
+		"if [ ! -f \"$HOME/limit\" ]; then touch \"$HOME/limit\"; cat <<'LIMIT'\n" +
+		string(limit) + "\nLIMIT\nexit 1\nfi\nexec " + f.first + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	f.repo.Env["AGENT_ROLE_REVIEWER"] = "claude:src/model[1m]:high"
+	f.repo.Env["AGENT_ROLE_REVIEWER_FALLBACK"] = "claude:src/mode[l]1:low"
+	f.runtime.StateRoot = t.TempDir()
+	f.tickUntilRecorded(t)
+	got, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), "models"))
+	if err != nil || string(got) != "src/model[1m]\nsrc/mode[l]1\n" {
+		t.Fatalf("cross reviewer received %q, err=%v", got, err)
+	}
+}

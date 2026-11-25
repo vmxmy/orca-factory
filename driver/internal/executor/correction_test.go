@@ -283,3 +283,48 @@ func TestReviewerWithoutCandidatesUsesProfileRelay(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewerKeepsModelArgumentOnRetry(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, file := range []string{"primary1", "fallback1"} {
+		if err := os.WriteFile(filepath.Join(dir, file), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\nprintf '%s' \"$3\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []modelhealth.Ref{{Agent: "claude", Model: "primary[1m]"}, {Agent: "claude", Model: "fallback[1m]"}}
+	command, err := config.GenerateReviewerCommand(refs[0].String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Commands{ReviewerCommand: command, ReviewerCandidates: refs, StateRoot: t.TempDir()}
+	var models []string
+	c.Run = withReviewerRole(t, func(ctx context.Context, s runx.Spec) ([]byte, error) {
+		if s.Path != "/bin/sh" {
+			return nil, nil
+		}
+		s.Dir = dir
+		out, err := runx.Run(ctx, s)
+		if err != nil {
+			return out, err
+		}
+		models = append(models, string(out))
+		if len(models) == 1 {
+			return limit, errors.New("model unavailable")
+		}
+		return out, nil
+	})
+	if _, _, err = c.Review(t.Context(), dir, "origin/main", "HEAD", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(models, []string{refs[0].Model, refs[1].Model}) {
+		t.Errorf("reviewer received models %q", models)
+	}
+}

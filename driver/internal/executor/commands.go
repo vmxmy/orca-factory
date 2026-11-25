@@ -235,7 +235,7 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if !retry {
 		return string(b), tier, err
 	}
-	if spec.Args[3], err = config.GenerateReviewerCommand(next.String()); err != nil {
+	if spec.Args[3], err = config.ReviewerShellCommand(next); err != nil {
 		return "", tier, errors.New("reviewer fallback command invalid")
 	}
 	profile, _ = agentcli.Lookup(next.Agent)

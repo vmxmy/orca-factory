@@ -441,8 +441,8 @@ func TestCodexReviewerBracketModel(t *testing.T) {
 	const prefix = "env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN codex exec -m "
 	for _, tc := range []struct{ model, effort, wantArgs string }{
 		{"model$[v2", "high", "model$[v2 -c model_reasoning_effort=high"},
-		{"model$[2]", "high", "'model$[2]' -c model_reasoning_effort=high"},
-		{"model$[v2", "high]", "'model$[v2' -c model_reasoning_effort=high]"},
+		{"model$[2]", "high", "model$[2] -c model_reasoning_effort=high"},
+		{"model$[v2", "high]", "model$[v2 -c model_reasoning_effort=high]"},
 	} {
 		command, err := config.GenerateReviewerCommand("codex:" + tc.model + ":" + tc.effort)
 		if want := prefix + tc.wantArgs + " --sandbox read-only -"; err != nil || command != want {

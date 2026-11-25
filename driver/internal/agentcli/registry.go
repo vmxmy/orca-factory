@@ -189,13 +189,22 @@ func builtinLiteral(arg string, remaining []string) bool {
 var shellSyntax = regexp.MustCompile(`[[:space:][:cntrl:]|&;()<>\x60"'\\*?]|\$[a-zA-Z0-9_@*#?$!{\[-]`)
 
 func (p Profile) ReviewerCommand(model, effort string) string {
+	if p.builtinReviewer {
+		args := expand(p.ReviewArgs, model, effort, "", "", true)
+		return p.reviewPrefix + strings.Join(append([]string{p.Executable()}, args...), " ")
+	}
+	return p.ReviewerShellCommand(model, effort)
+}
+
+// ReviewerShellCommand quotes every argument for the shell that launches the reviewer.
+func (p Profile) ReviewerShellCommand(model, effort string) string {
 	words := []string{quote(p.Executable())}
 	// NUL cannot occur in an executable shell argument. Keep the stdin slot
 	// distinct from a literal role value such as "{prompt}".
 	const stdin = "\x00"
 	prefix := p.reviewPrefix
 	args := expand(p.ReviewArgs, model, effort, stdin, "", true)
-	for i, arg := range args {
+	for _, arg := range args {
 		if strings.Contains(arg, stdin) {
 			// Command substitution strips trailing newlines. Append a sentinel before
 			// capturing stdin, then remove it once for all prompt placeholders.
@@ -207,10 +216,6 @@ func (p Profile) ReviewerCommand(model, effort string) string {
 				}
 			}
 			words = append(words, strings.Join(parts, `"${orca_review_prompt}"`))
-		} else if p.builtinReviewer && builtinLiteral(arg, args[i:]) {
-			words = append(words, arg)
-		} else if arg == model && p.extendedContext && strings.HasSuffix(model, "[1m]") && builtinLiteral(strings.TrimSuffix(model, "[1m]"), args[i:]) {
-			words = append(words, model)
 		} else {
 			words = append(words, quote(arg))
 		}
@@ -237,6 +242,18 @@ func (p Profile) MatchReviewerCommand(command string) (model, effort string, ok 
 			}
 			if i := re.SubexpIndex("e"); i >= 0 {
 				effort = match[i]
+			}
+			// A legacy shell command can only identify its model when the
+			// captured words are literal. Keep the established Claude alias.
+			if p.builtinReviewer {
+				literalModel := model
+				if p.extendedContext {
+					literalModel = strings.TrimSuffix(model, "[1m]")
+				}
+				if (literalModel != "" && !builtinLiteral(literalModel, []string{model, effort})) ||
+					(effort != "" && !builtinLiteral(effort, []string{effort})) {
+					continue
+				}
 			}
 			if p.ReviewerCommand(model, effort) == command {
 				return model, effort, true
