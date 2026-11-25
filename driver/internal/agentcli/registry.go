@@ -233,15 +233,21 @@ func (p Profile) LiteralReviewerArgv(model, effort string) []string {
 func (p Profile) MatchReviewerCommand(command string) (model, effort string, matched, literal bool) {
 	const modelMark = "ORCA_MODEL_PLACEHOLDER"
 	const effortMark = "ORCA_EFFORT_PLACEHOLDER"
-	capture := `\S+`
-	if p.builtinReviewer {
-		// Historical built-in text embeds role values, including whitespace, verbatim.
-		capture = `(?s:.+?)`
+	modelMarks, effortMarks := []string{modelMark, ""}, []string{effortMark, ""}
+	if !p.builtinReviewer {
+		// A placeholder can quote the entire flag, including a fixed prefix.
+		modelMarks = append(modelMarks, "ORCA QUOTED MODEL")
+		effortMarks = append(effortMarks, "ORCA QUOTED EFFORT")
 	}
-	for _, m := range []string{modelMark, ""} {
-		for _, e := range []string{effortMark, ""} {
+	for _, m := range modelMarks {
+		for _, e := range effortMarks {
 			pattern := regexp.QuoteMeta(p.ReviewerCommand(m, e))
-			pattern = strings.NewReplacer(modelMark, "(?P<m>"+capture+")", effortMark, "(?P<e>"+capture+")").Replace(pattern)
+			if m != "" {
+				pattern = strings.ReplaceAll(pattern, m, `(?P<m>(?s:.+?))`)
+			}
+			if e != "" {
+				pattern = strings.ReplaceAll(pattern, e, `(?P<e>(?s:.+?))`)
+			}
 			re := regexp.MustCompile("^" + pattern + "$")
 			match := re.FindStringSubmatch(command)
 			if match == nil {
@@ -253,6 +259,10 @@ func (p Profile) MatchReviewerCommand(command string) (model, effort string, mat
 			}
 			if i := re.SubexpIndex("e"); i >= 0 {
 				effort = match[i]
+			}
+			if !p.builtinReviewer {
+				model = strings.ReplaceAll(model, `'\''`, "'")
+				effort = strings.ReplaceAll(effort, `'\''`, "'")
 			}
 			// A legacy shell command can only identify its model when the
 			// captured words are literal. Keep the established Claude alias.

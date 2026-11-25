@@ -255,10 +255,11 @@ func TestReviewerRelayChangesWithCandidate(t *testing.T) {
 func TestReviewerWithoutCandidatesUsesProfileRelay(t *testing.T) {
 	agentcli.Configure(map[string]agentcli.Profile{
 		"local":  {Binary: "shared", ReviewArgs: []string{"--model", "{model}"}},
+		"inline": {Binary: "inline", ReviewArgs: []string{"--model={model}", "--level={effort}"}},
 		"remote": {Binary: "shared", ReviewArgs: []string{"--model", "{model}"}, Relay: true},
 	})
 	t.Cleanup(func() { agentcli.Configure(nil) })
-	for _, role := range []string{"codex::", "codex:model$[2]:high", "codex:model with spaces:high", "local:chosen:high"} {
+	for _, role := range []string{"codex::", "codex:model$[2]:high", "codex:model with spaces:high", "local:chosen:high", "local:two words:high", "inline:two words:level with quote'"} {
 		t.Run(role, func(t *testing.T) {
 			t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
 			command, err := config.GenerateReviewerCommand(role)
