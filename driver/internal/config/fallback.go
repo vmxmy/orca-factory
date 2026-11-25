@@ -99,11 +99,13 @@ func RetryAfterModelStatus(stateRoot string, status modelhealth.Status, candidat
 // exactly what GenerateReviewerCommand builds for it, so a reviewer without
 // fallback still records that model's error. Any other command reports false.
 func ReviewerRef(command string) (modelhealth.Ref, bool) {
-	ref, _ := matchReviewer(command)
+	ref, _, _ := MatchReviewer(command)
 	return ref, ref.Model != ""
 }
 
-func matchReviewer(command string) (modelhealth.Ref, agentcli.Profile) {
+// MatchReviewer distinguishes a legacy command from generated commands shared
+// by multiple profiles. The latter match but have no unique ref or relay policy.
+func MatchReviewer(command string) (modelhealth.Ref, agentcli.Profile, bool) {
 	var found modelhealth.Ref
 	var matched agentcli.Profile
 	for _, profile := range agentcli.List() {
@@ -114,12 +116,12 @@ func matchReviewer(command string) (modelhealth.Ref, agentcli.Profile) {
 		ref, err := modelhealth.Parse(profile.Name + ":" + model + ":" + effort)
 		if err == nil {
 			if found.Agent != "" {
-				return modelhealth.Ref{}, agentcli.Profile{}
+				return modelhealth.Ref{}, agentcli.Profile{}, true
 			}
 			found, matched = ref, profile
 		}
 	}
-	return found, matched
+	return found, matched, found.Agent != ""
 }
 
 // ModelParked prefixes the 搁置 reason of a ticket parked because every model

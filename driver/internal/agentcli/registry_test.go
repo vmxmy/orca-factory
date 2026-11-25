@@ -171,7 +171,7 @@ func TestLoadAgyProfile(t *testing.T) {
 		t.Fatalf("driver.toml profile = %+v, %t", p, ok)
 	}
 	got, err := config.GenerateReviewerCommand("agy:chosen:high")
-	if err != nil || got != `agy --model chosen --effort high --disable-slash-commands --mode plan --print "$(cat)"` {
+	if err != nil || got != `orca_review_prompt=$(cat && printf .) || exit 1; orca_review_prompt=${orca_review_prompt%.}; agy --model chosen --effort high --disable-slash-commands --mode plan --print "${orca_review_prompt}"` {
 		t.Fatalf("reviewer = %q, %v", got, err)
 	}
 	if got := p.ProbeArgv("chosen", "high", "probe"); !slices.Equal(got, []string{"--model", "chosen", "--sandbox", "--mode", "plan", "--print", "probe"}) {
@@ -425,7 +425,7 @@ func TestClaudeExtendedContextReviewer(t *testing.T) {
 }
 
 func TestClaudeReviewerLiteralModel(t *testing.T) {
-	for _, name := range []string{"model{v2}", "team%2Fopus", "team~opus", "team#opus", "team·opus"} {
+	for _, name := range []string{"model{v2}", "model{v2.1}", "team%2Fopus", "team~opus", "team#opus", "team·opus"} {
 		original := "claude -p --model " + name + " --effort high --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"
 		want := modelhealth.Ref{Agent: "claude", Model: name, Effort: "high"}
 		if command, err := config.GenerateReviewerCommand(want.String()); err != nil || command != original {
@@ -445,11 +445,11 @@ func TestInlineAgentPrompt(t *testing.T) {
 			t.Errorf("probe args = %q", got)
 		}
 	}
-	p := agentcli.Profile{Binary: "printf", ReviewArgs: []string{"%s", "--print={prompt}"}}
+	p := agentcli.Profile{Binary: "printf", ReviewArgs: []string{"%s", "--print={prompt}/{prompt}"}}
 	cmd := exec.Command("/bin/sh", "-c", p.ReviewerCommand("", ""))
-	const input = "two words 'quoted'\nnext line"
+	const input = "two words 'quoted'\nnext line\n\n"
 	cmd.Stdin = strings.NewReader(input)
-	if out, err := cmd.CombinedOutput(); err != nil || string(out) != "--print="+input {
+	if out, err := cmd.CombinedOutput(); err != nil || string(out) != "--print="+input+"/"+input {
 		t.Errorf("reviewer argv: %q, %v", out, err)
 	}
 }

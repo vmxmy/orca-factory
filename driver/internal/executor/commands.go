@@ -215,10 +215,15 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 		return "", tier, errors.New("review input write failed")
 	}
 	spec := runx.Spec{Path: "/bin/sh", Args: []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, name}, Dir: dir, Timeout: 10 * time.Minute}
+	profile, _ := agentcli.Lookup(used.Agent)
 	if len(candidates) == 0 {
-		used, _ = config.ReviewerRef(command)
+		var matched bool
+		used, profile, matched = config.MatchReviewer(command)
+		if !matched {
+			profile.Relay = true // Legacy shell commands inherit the configured proxy.
+		}
 	}
-	spec.Env = c.reviewerEnv(used)
+	spec.Env = c.reviewerEnv(profile)
 	b, err := c.runSpec(ctx, spec)
 	if err == nil {
 		return string(b), tier, nil
@@ -233,7 +238,8 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if spec.Args[3], err = config.GenerateReviewerCommand(next.String()); err != nil {
 		return "", tier, errors.New("reviewer fallback command invalid")
 	}
-	spec.Env = c.reviewerEnv(next)
+	profile, _ = agentcli.Lookup(next.Agent)
+	spec.Env = c.reviewerEnv(profile)
 	runx.LoggerFrom(ctx).Info("reviewer model unavailable; retrying with next candidate", "tier", tier, "unavailable", used.String(), "selected", next.String())
 	if b, err = c.runSpec(ctx, spec); err != nil {
 		if _, _, modelErr = config.RetryAfterModelError(c.StateRoot, next, nil, b, err, time.Now()); modelErr != nil {
@@ -243,13 +249,7 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	return string(b), tier, err
 }
 
-// Legacy shell commands retain their configured proxy. Structured roles
-// use the selected candidate's relay policy on each invocation.
-func (c *Commands) reviewerEnv(selected modelhealth.Ref) []string {
-	profile, _ := agentcli.Lookup(selected.Agent)
-	if selected.Agent == "" {
-		profile.Relay = true
-	}
+func (c *Commands) reviewerEnv(profile agentcli.Profile) []string {
 	if profile.Relay && c.ModelProxyURL == "" && os.Getenv("AGENT_MODEL_PROXY_TOKEN") == "" {
 		return nil
 	}

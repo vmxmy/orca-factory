@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
@@ -252,24 +253,33 @@ func TestReviewerRelayChangesWithCandidate(t *testing.T) {
 }
 
 func TestReviewerWithoutCandidatesUsesProfileRelay(t *testing.T) {
-	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
-	command, err := config.GenerateReviewerCommand("codex::")
-	if err != nil {
-		t.Fatal(err)
-	}
-	const proxy = "https://configured.invalid"
-	c := Commands{ReviewerCommand: command, ModelProxyURL: proxy}
-	called := false
-	c.Run = withReviewerRole(t, func(_ context.Context, s runx.Spec) ([]byte, error) {
-		if s.Path == "/bin/sh" {
-			called = true
-			if s.Env == nil || slices.Contains(s.Env, "ANTHROPIC_AUTH_TOKEN=sentinel") || slices.Contains(s.Env, "ANTHROPIC_BASE_URL="+proxy) {
-				t.Error("non-relay reviewer received relay settings")
-			}
-		}
-		return nil, nil
+	agentcli.Configure(map[string]agentcli.Profile{
+		"local":  {Binary: "shared", ReviewArgs: []string{"--model", "{model}"}},
+		"remote": {Binary: "shared", ReviewArgs: []string{"--model", "{model}"}, Relay: true},
 	})
-	if _, _, err := c.Review(t.Context(), t.TempDir(), "origin/main", "HEAD", nil); err != nil || !called {
-		t.Fatalf("review called=%t, err=%v", called, err)
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	for _, role := range []string{"codex::", "local:chosen:high"} {
+		t.Run(role, func(t *testing.T) {
+			t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
+			command, err := config.GenerateReviewerCommand(role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const proxy = "https://configured.invalid"
+			c := Commands{ReviewerCommand: command, ModelProxyURL: proxy}
+			called := false
+			c.Run = withReviewerRole(t, func(_ context.Context, s runx.Spec) ([]byte, error) {
+				if s.Path == "/bin/sh" {
+					called = true
+					if s.Env == nil || slices.Contains(s.Env, "ANTHROPIC_AUTH_TOKEN=sentinel") || slices.Contains(s.Env, "ANTHROPIC_BASE_URL="+proxy) {
+						t.Error("non-relay reviewer received relay settings")
+					}
+				}
+				return nil, nil
+			})
+			if _, _, err := c.Review(t.Context(), t.TempDir(), "origin/main", "HEAD", nil); err != nil || !called {
+				t.Fatalf("review called=%t, err=%v", called, err)
+			}
+		})
 	}
 }

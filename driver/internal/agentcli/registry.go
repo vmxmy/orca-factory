@@ -160,12 +160,12 @@ func (p Profile) CorrectionStdin() bool {
 }
 
 // A leading tilde or hash has shell syntax; inside an argument both are literal.
-const shellWordPattern = `[a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:^-](?:[a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:~#!^-]|\{[a-zA-Z0-9_-]+\})*`
+const shellWordPattern = `[a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:^-][a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:~#!{}^-]*`
 
 var shellWord = regexp.MustCompile("^" + shellWordPattern + "$")
 
 func quote(arg string) string {
-	if shellWord.MatchString(arg) {
+	if shellWord.MatchString(arg) && !(strings.Contains(arg, "{") && (strings.Contains(arg, ",") || strings.Contains(arg, ".."))) {
 		return arg
 	}
 	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
@@ -176,23 +176,27 @@ func (p Profile) ReviewerCommand(model, effort string) string {
 	// NUL cannot occur in an executable shell argument. Keep the stdin slot
 	// distinct from a literal role value such as "{prompt}".
 	const stdin = "\x00"
+	prefix := p.reviewPrefix
 	args := expand(p.ReviewArgs, model, effort, stdin, "", true)
 	for _, arg := range args {
 		if strings.Contains(arg, stdin) {
+			// Command substitution strips trailing newlines. Append a sentinel before
+			// capturing stdin, then remove it once for all prompt placeholders.
+			prefix = `orca_review_prompt=$(cat && printf .) || exit 1; orca_review_prompt=${orca_review_prompt%.}; ` + p.reviewPrefix
 			parts := strings.Split(arg, stdin)
 			for i, part := range parts {
 				if part != "" {
 					parts[i] = quote(part)
 				}
 			}
-			words = append(words, strings.Join(parts, `"$(cat)"`))
+			words = append(words, strings.Join(parts, `"${orca_review_prompt}"`))
 		} else if arg == model && p.unquotedModel != nil && p.unquotedModel.MatchString(model) {
 			words = append(words, model)
 		} else {
 			words = append(words, quote(arg))
 		}
 	}
-	return p.reviewPrefix + strings.Join(words, " ")
+	return prefix + strings.Join(words, " ")
 }
 
 // MatchReviewerCommand recovers literal role arguments only from a complete generated command.
