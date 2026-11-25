@@ -165,7 +165,8 @@ const shellWordPattern = `[a-zA-Z0-9\x{80}-\x{10ffff}_.,/@%+=:^-][a-zA-Z0-9\x{80
 var shellWord = regexp.MustCompile("^" + shellWordPattern + "$")
 
 func quote(arg string) string {
-	if shellWord.MatchString(arg) && !(strings.Contains(arg, "{") && (strings.Contains(arg, ",") || strings.Contains(arg, ".."))) {
+	braceExpansion := strings.Contains(arg, "{") && (strings.Contains(arg, ",") || strings.Contains(arg, ".."))
+	if shellWord.MatchString(arg) && !braceExpansion {
 		return arg
 	}
 	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
