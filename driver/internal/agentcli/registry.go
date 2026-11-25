@@ -11,27 +11,27 @@ import (
 )
 
 type Profile struct {
-	Name           string   `toml:"-"`
-	Binary         string   `toml:"binary"`
-	ProbeArgs      []string `toml:"probe_args"`
-	ReviewArgs     []string `toml:"review_args"`
-	CorrectionArgs []string `toml:"correction_args"`
-	Relay          bool     `toml:"relay"`
-	reviewPrefix   string
-	unquotedModel  *regexp.Regexp
+	Name            string   `toml:"-"`
+	Binary          string   `toml:"binary"`
+	ProbeArgs       []string `toml:"probe_args"`
+	ReviewArgs      []string `toml:"review_args"`
+	CorrectionArgs  []string `toml:"correction_args"`
+	Relay           bool     `toml:"relay"`
+	reviewPrefix    string
+	builtinReviewer bool
+	extendedContext bool
 }
 
 // registered holds built-in and programmatic profiles across machine config reloads.
 var registered = map[string]Profile{
 	"claude": {
-		Name: "claude", Relay: true,
-		unquotedModel:  regexp.MustCompile("^" + shellWordPattern + `(?:\[1m\])?$`),
+		Name: "claude", Relay: true, builtinReviewer: true, extendedContext: true,
 		ProbeArgs:      []string{"-p", "--model", "{model}", "--tools", "", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"},
 		ReviewArgs:     strings.Fields("-p --model {model} --effort {effort} --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"),
 		CorrectionArgs: strings.Fields("-p {prompt} --model {model} --effort {effort} --permission-mode acceptEdits --add-dir {dir} --allowedTools Read,Grep,Glob,Write,Edit --tools Read,Grep,Glob,Write,Edit"),
 	},
 	"codex": {
-		Name: "codex", unquotedModel: shellWord, reviewPrefix: "env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN ",
+		Name: "codex", builtinReviewer: true, reviewPrefix: "env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN ",
 		ProbeArgs:      strings.Fields("exec -m {model} -c model_reasoning_effort=low --sandbox read-only --ephemeral"),
 		ReviewArgs:     strings.Fields("exec -m {model} -c model_reasoning_effort={effort} --sandbox read-only -"),
 		CorrectionArgs: strings.Fields("exec --model {model} -c model_reasoning_effort={effort} --sandbox workspace-write --add-dir {dir} --ephemeral -"),
@@ -172,6 +172,17 @@ func quote(arg string) string {
 	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
 }
 
+// The built-ins historically emitted literal role values without quotes.
+func builtinLiteral(arg string) bool {
+	if arg == "" || strings.HasPrefix(arg, "#") || strings.HasPrefix(arg, "~") || shellSyntax.MatchString(arg) {
+		return false
+	}
+	_, rest, opened := strings.Cut(arg, "[")
+	return !opened || !strings.Contains(rest, "]")
+}
+
+var shellSyntax = regexp.MustCompile(`[[:space:][:cntrl:]|&;()<>\x60$"'\\*?]`)
+
 func (p Profile) ReviewerCommand(model, effort string) string {
 	words := []string{quote(p.Executable())}
 	// NUL cannot occur in an executable shell argument. Keep the stdin slot
@@ -191,7 +202,9 @@ func (p Profile) ReviewerCommand(model, effort string) string {
 				}
 			}
 			words = append(words, strings.Join(parts, `"${orca_review_prompt}"`))
-		} else if arg == model && p.unquotedModel != nil && p.unquotedModel.MatchString(model) {
+		} else if p.builtinReviewer && builtinLiteral(arg) {
+			words = append(words, arg)
+		} else if arg == model && p.extendedContext && strings.HasSuffix(model, "[1m]") && builtinLiteral(strings.TrimSuffix(model, "[1m]")) {
 			words = append(words, model)
 		} else {
 			words = append(words, quote(arg))
@@ -207,7 +220,7 @@ func (p Profile) MatchReviewerCommand(command string) (model, effort string, ok 
 	for _, m := range []string{modelMark, ""} {
 		for _, e := range []string{effortMark, ""} {
 			pattern := regexp.QuoteMeta(p.ReviewerCommand(m, e))
-			pattern = strings.NewReplacer(modelMark, "(?P<m>"+shellWordPattern+`(?:\[1m\])?)`, effortMark, "(?P<e>"+shellWordPattern+")").Replace(pattern)
+			pattern = strings.NewReplacer(modelMark, `(?P<m>\S+)`, effortMark, `(?P<e>\S+)`).Replace(pattern)
 			re := regexp.MustCompile("^" + pattern + "$")
 			match := re.FindStringSubmatch(command)
 			if match == nil {

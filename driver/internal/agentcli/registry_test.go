@@ -425,7 +425,7 @@ func TestClaudeExtendedContextReviewer(t *testing.T) {
 }
 
 func TestClaudeReviewerLiteralModel(t *testing.T) {
-	for _, name := range []string{"model{v2}", "model{v2.1}", "team,model{v2.1}", "team%2Fopus", "team~opus", "team#opus", "team·opus"} {
+	for _, name := range []string{"{v2.1}", "}v2", "!v2", "v2]", "model{v2}", "model{v2.1}", "team,model{v2.1}", "team%2Fopus", "team~opus", "team#opus", "team·opus"} {
 		original := "claude -p --model " + name + " --effort high --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"
 		want := modelhealth.Ref{Agent: "claude", Model: name, Effort: "high"}
 		if command, err := config.GenerateReviewerCommand(want.String()); err != nil || command != original {
