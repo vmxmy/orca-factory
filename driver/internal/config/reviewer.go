@@ -113,6 +113,9 @@ func SelectReviewerCommand(command string, candidates []modelhealth.Ref, stateRo
 	if len(candidates) == 0 {
 		return command, modelhealth.Ref{}, nil
 	}
+	if stateRoot == "" {
+		return command, candidates[0], nil
+	}
 	ref, err := SelectModel(stateRoot, candidates[0], candidates[1:], now)
 	if ref == candidates[0] {
 		return command, ref, err

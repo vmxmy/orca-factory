@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
@@ -1837,5 +1838,34 @@ func TestModelRelayDoctor(t *testing.T) {
 		if role.ref.Agent != "claude" && (role.endpoint.BaseURL != "" || role.endpoint.AuthToken != "") {
 			t.Errorf("relay reached %s", role.name)
 		}
+	}
+}
+
+func TestConfiguredEffortProbeKey(t *testing.T) {
+	agentcli.Configure(map[string]agentcli.Profile{"agy": {ProbeArgs: []string{"--effort", "{effort}"}}})
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	p := modelFixtureProbe(time.Now(), t.TempDir())
+	var mu sync.Mutex
+	calls := map[string]int{}
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
+		mu.Lock()
+		calls[ref.Effort]++
+		mu.Unlock()
+		state := modelhealth.OK
+		if ref.Effort == "low" {
+			state = modelhealth.Unknown
+		}
+		return modelhealth.Status{Ref: ref, State: state, CheckedAt: p.now}
+	}
+	project := projects.Project{Name: "example", Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "agy:m:low", "AGENT_ROLE_REVIEWER": "agy:m:high",
+	}}}
+	result := p.checkModels(t.Context(), []projects.Project{project}, nil)
+	states := map[string]string{}
+	for _, row := range result.Details.([]doctorModelStatus) {
+		states[row.Role] = row.Status.State
+	}
+	if calls["high"] != 1 || calls["low"] != 1 || states["worker_default"] != modelhealth.Unknown || states["reviewer"] != modelhealth.OK {
+		t.Fatalf("calls=%v role results=%v", calls, states)
 	}
 }
