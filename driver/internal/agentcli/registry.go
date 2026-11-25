@@ -173,7 +173,12 @@ func quote(arg string) string {
 }
 
 // The built-ins historically emitted literal role values without quotes.
-func builtinLiteral(arg string) bool {
+func builtinLiteral(arg string, remaining []string) bool {
+	// Bash can close $[ arithmetic in a later argument. With no closing
+	// bracket the historical command cannot expand it.
+	if strings.Contains(arg, "$[") && !strings.Contains(strings.Join(remaining, " "), "]") {
+		arg = strings.ReplaceAll(arg, "$[", "[")
+	}
 	if arg == "" || strings.HasPrefix(arg, "#") || strings.HasPrefix(arg, "~") || shellSyntax.MatchString(arg) {
 		return false
 	}
@@ -190,7 +195,7 @@ func (p Profile) ReviewerCommand(model, effort string) string {
 	const stdin = "\x00"
 	prefix := p.reviewPrefix
 	args := expand(p.ReviewArgs, model, effort, stdin, "", true)
-	for _, arg := range args {
+	for i, arg := range args {
 		if strings.Contains(arg, stdin) {
 			// Command substitution strips trailing newlines. Append a sentinel before
 			// capturing stdin, then remove it once for all prompt placeholders.
@@ -202,9 +207,9 @@ func (p Profile) ReviewerCommand(model, effort string) string {
 				}
 			}
 			words = append(words, strings.Join(parts, `"${orca_review_prompt}"`))
-		} else if p.builtinReviewer && builtinLiteral(arg) {
+		} else if p.builtinReviewer && builtinLiteral(arg, args[i:]) {
 			words = append(words, arg)
-		} else if arg == model && p.extendedContext && strings.HasSuffix(model, "[1m]") && builtinLiteral(strings.TrimSuffix(model, "[1m]")) {
+		} else if arg == model && p.extendedContext && strings.HasSuffix(model, "[1m]") && builtinLiteral(strings.TrimSuffix(model, "[1m]"), args[i:]) {
 			words = append(words, model)
 		} else {
 			words = append(words, quote(arg))

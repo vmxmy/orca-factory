@@ -425,7 +425,7 @@ func TestClaudeExtendedContextReviewer(t *testing.T) {
 }
 
 func TestClaudeReviewerLiteralModel(t *testing.T) {
-	for _, name := range []string{"model$", "model$.v2", "{v2.1}", "}v2", "!v2", "v2]", "model{v2}", "model{v2.1}", "team,model{v2.1}", "team%2Fopus", "team~opus", "team#opus", "team·opus"} {
+	for _, name := range []string{"model$", "model$.v2", "model$[v2", "{v2.1}", "}v2", "!v2", "v2]", "model{v2}", "model{v2.1}", "team,model{v2.1}", "team%2Fopus", "team~opus", "team#opus", "team·opus"} {
 		original := "claude -p --model " + name + " --effort high --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"
 		want := modelhealth.Ref{Agent: "claude", Model: name, Effort: "high"}
 		if command, err := config.GenerateReviewerCommand(want.String()); err != nil || command != original {
@@ -433,6 +433,20 @@ func TestClaudeReviewerLiteralModel(t *testing.T) {
 		}
 		if got, ok := config.ReviewerRef(original); !ok || got != want {
 			t.Errorf("original reviewer ref = %+v, %t; want %+v", got, ok, want)
+		}
+	}
+}
+
+func TestCodexReviewerBracketModel(t *testing.T) {
+	const prefix = "env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN codex exec -m "
+	for _, tc := range []struct{ model, effort, wantArgs string }{
+		{"model$[v2", "high", "model$[v2 -c model_reasoning_effort=high"},
+		{"model$[2]", "high", "'model$[2]' -c model_reasoning_effort=high"},
+		{"model$[v2", "high]", "'model$[v2' -c model_reasoning_effort=high]"},
+	} {
+		command, err := config.GenerateReviewerCommand("codex:" + tc.model + ":" + tc.effort)
+		if want := prefix + tc.wantArgs + " --sandbox read-only -"; err != nil || command != want {
+			t.Errorf("reviewer command = %q, %v; want %q", command, err, want)
 		}
 	}
 }
