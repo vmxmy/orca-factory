@@ -181,7 +181,7 @@ func builtinLiteral(arg string) bool {
 	return !opened || !strings.Contains(rest, "]")
 }
 
-var shellSyntax = regexp.MustCompile(`[[:space:][:cntrl:]|&;()<>\x60$"'\\*?]`)
+var shellSyntax = regexp.MustCompile(`[[:space:][:cntrl:]|&;()<>\x60"'\\*?]|\$[a-zA-Z0-9_@*#?$!{\[-]`)
 
 func (p Profile) ReviewerCommand(model, effort string) string {
 	words := []string{quote(p.Executable())}
