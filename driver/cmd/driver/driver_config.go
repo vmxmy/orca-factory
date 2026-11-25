@@ -194,7 +194,7 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 		s.Problems = append(s.Problems, "driver 配置无法加载（"+err.Error()+"），调度项与仓库未列出")
 		return s
 	}
-	s.Agents = agentcli.List()
+	s.Agents = agentcli.Names()
 	s.Overview.FactoryRoot = cfg.FactoryRoot
 	s.Scheduler = schedulerEntries(home, cfg, &s.Problems)
 	result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})

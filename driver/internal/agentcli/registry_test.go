@@ -34,8 +34,17 @@ func TestAgentCliRegistryLookupAgy(t *testing.T) {
 	if !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Lookup(agy) = %+v, %t; want %+v", got, ok, want)
 	}
-	if !agentcli.Registered("agy") || !slices.Contains(agentcli.List(), "agy") {
-		t.Fatal("registered agy missing from registry")
+	if !agentcli.Registered("agy") {
+		t.Fatal("agy was not registered")
+	}
+	list := agentcli.List()
+	i := slices.IndexFunc(list, func(p agentcli.Profile) bool { return p.Name == "agy" })
+	if i < 0 || !reflect.DeepEqual(list[i], want) {
+		t.Fatalf("List() = %+v; want registered profile %+v", list, want)
+	}
+	list[i].ReviewArgs[0] = "changed"
+	if stored, _ := agentcli.Lookup("agy"); !reflect.DeepEqual(stored, want) {
+		t.Fatalf("editing a listed profile changed the registry: %+v", stored)
 	}
 }
 

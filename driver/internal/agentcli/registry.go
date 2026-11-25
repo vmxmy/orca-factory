@@ -81,7 +81,17 @@ func Registered(name string) bool {
 	return ok
 }
 
-func List() []string {
+func List() []Profile {
+	mu.RLock()
+	defer mu.RUnlock()
+	list := make([]Profile, 0, len(profiles))
+	for _, name := range slices.Sorted(maps.Keys(profiles)) {
+		list = append(list, profiles[name].clone())
+	}
+	return list
+}
+
+func Names() []string {
 	mu.RLock()
 	defer mu.RUnlock()
 	return slices.Sorted(maps.Keys(profiles))

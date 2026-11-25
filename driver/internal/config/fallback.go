@@ -106,16 +106,12 @@ func ReviewerRef(command string) (modelhealth.Ref, bool) {
 func matchReviewer(command string) (modelhealth.Ref, agentcli.Profile) {
 	var found modelhealth.Ref
 	var matched agentcli.Profile
-	for _, agent := range agentcli.List() {
-		profile, ok := agentcli.Lookup(agent)
-		if !ok {
-			continue
-		}
+	for _, profile := range agentcli.List() {
 		model, effort, ok := profile.MatchReviewerCommand(command)
 		if !ok {
 			continue
 		}
-		ref, err := modelhealth.Parse(agent + ":" + model + ":" + effort)
+		ref, err := modelhealth.Parse(profile.Name + ":" + model + ":" + effort)
 		if err == nil {
 			if found.Agent != "" {
 				return modelhealth.Ref{}, agentcli.Profile{}

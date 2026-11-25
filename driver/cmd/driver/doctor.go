@@ -237,7 +237,7 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		checks["ledger"] = p.checkLedger(ctx, eligible)
 		checks["models"] = p.checkModels(ctx, eligible, discovered.Rejected)
 	}
-	report := healthReport{Agents: agentcli.List(), Checks: checks, Errors: []string{}}
+	report := healthReport{Agents: agentcli.Names(), Checks: checks, Errors: []string{}}
 	for _, name := range doctorChecks {
 		if checks[name].unprobed {
 			report.Errors = append(report.Errors, name+": "+checks[name].Reason)
