@@ -9,6 +9,21 @@ import (
 	"time"
 )
 
+// TestMain points HOME at an empty directory so LoadRepository never overlays
+// the machine's ~/.config/orca-factory/profiles.toml.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "config-test-home-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("HOME", home); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
+
 func TestGearOverrideWinsOverRepository(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", state)
