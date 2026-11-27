@@ -13,6 +13,21 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
+// TestMain points HOME at an empty directory so config.LoadRepository never
+// overlays the machine's ~/.config/orca-factory/profiles.toml.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "projects-test-home-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("HOME", home); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
+
 // writeEnv installs path/scripts/agent-gates/agent-graph.env with the given
 // content, so Discover's os.Stat and config.LoadRepository see a real file.
 func writeEnv(t *testing.T, path, content string) {

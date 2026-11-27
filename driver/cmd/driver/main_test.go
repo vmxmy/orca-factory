@@ -21,7 +21,16 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	cleanup := testsupport.IsolateStatus()
+	// An empty HOME keeps the machine's ~/.config/orca-factory/profiles.toml out of every test.
+	home, err := os.MkdirTemp("", "driver-test-home-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("HOME", home); err != nil {
+		panic(err)
+	}
 	code := m.Run()
+	_ = os.RemoveAll(home)
 	cleanup()
 	os.Exit(code)
 }
