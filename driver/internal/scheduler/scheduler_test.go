@@ -22,6 +22,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -197,7 +198,7 @@ func TestLegacyTakeover(t *testing.T) {
 		kind          ActionKind
 		launch, merge int
 	}{
-		{"PR", Legacy{HasPR: true}, Merge, 0, 1}, {"complete branch", Legacy{Complete: true}, Resume, 1, 0}, {"release", Legacy{}, Release, 0, 0},
+		{"complete branch", Legacy{Complete: true}, Resume, 1, 0}, {"release", Legacy{}, Release, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeBackend{legacy: map[string]Legacy{"ticket": tc.legacy}}
@@ -211,6 +212,34 @@ func TestLegacyTakeover(t *testing.T) {
 			}
 			if tc.launch == 1 && f.launched[0].Phase != machine.PhaseGate {
 				t.Fatal("legacy branch did not request gate resume")
+			}
+		})
+	}
+}
+func TestLegacyTicketWithPRWithoutHandoffGoesToResolver(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		legacy  Legacy
+		handoff *merge.Handoff
+		kind    ActionKind
+		phase   machine.Phase
+	}{
+		{"PR without handoff", Legacy{HasPR: true}, nil, Resolve, machine.PhaseResolver},
+		{"PR with handoff", Legacy{HasPR: true}, &merge.Handoff{PR: 7}, Merge, machine.PhaseMergeQueue},
+		{"complete branch", Legacy{Complete: true}, nil, Resume, machine.PhaseGate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeBackend{legacy: map[string]Legacy{"ticket": tc.legacy}}
+			s := setup(f)
+			f.tickets = []Ticket{{ID: "ticket", Repo: "a", Legacy: true, Handoff: tc.handoff, UpdatedAt: s.Now()}}
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.actions) != 1 || f.actions[0].Kind != tc.kind || f.actions[0].Phase != tc.phase {
+				t.Fatalf("actions=%v", f.actions)
+			}
+			if tc.kind == Resolve && f.actions[0].Reason != "legacy PR without frozen handoff" {
+				t.Fatalf("reason=%q", f.actions[0].Reason)
 			}
 		})
 	}
