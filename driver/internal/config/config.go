@@ -20,7 +20,11 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 )
+
+type AgentDef = agentcli.Profile
 
 type TokenBucket struct {
 	Capacity        int     `toml:"capacity"`
@@ -48,17 +52,15 @@ type Config struct {
 // A missing machine file yields default limits. It lists no repositories:
 // serve discovers them (projects.Discover, OF-43).
 func Load(home string) (Config, error) {
-	if _, err := loadProfiles(home); err != nil {
-		return Config{}, err
-	}
 	raw := struct {
-		MaxInFlight int         `toml:"max_in_flight"`
-		FactoryRoot string      `toml:"factory_root"`
-		TokenBucket TokenBucket `toml:"token_bucket"`
-		Scheduler   *Scheduler  `toml:"scheduler"`
-		GitHub      *GitHub     `toml:"github"`
-		Orca        *Orca       `toml:"orca"`
-		Ledger      *Ledger     `toml:"ledger"`
+		Agents      map[string]AgentDef `toml:"agents"`
+		MaxInFlight int                 `toml:"max_in_flight"`
+		FactoryRoot string              `toml:"factory_root"`
+		TokenBucket TokenBucket         `toml:"token_bucket"`
+		Scheduler   *Scheduler          `toml:"scheduler"`
+		GitHub      *GitHub             `toml:"github"`
+		Orca        *Orca               `toml:"orca"`
+		Ledger      *Ledger             `toml:"ledger"`
 	}{MaxInFlight: 4, TokenBucket: TokenBucket{Capacity: 4, RefillPerSecond: 1}}
 	path := filepath.Join(home, ".config", "orca-factory", "driver.toml")
 	data, err := os.ReadFile(path)
@@ -101,6 +103,10 @@ func Load(home string) (Config, error) {
 			return Config{}, errors.New("factory root path must be absolute")
 		}
 		result.FactoryRoot = filepath.Clean(root)
+	}
+	agentcli.Configure(raw.Agents)
+	if _, err := loadProfiles(home); err != nil {
+		return Config{}, err
 	}
 	return result, nil
 }
@@ -401,19 +407,13 @@ func ModelRelay(home string) (map[string]string, error) {
 
 var relayShellLiteral = regexp.MustCompile(`^[A-Za-z0-9._/@+-]*$`)
 
-// RelayReviewer reports whether the generated Claude command can receive relay
-// credentials. Only a structured reviewer key may use Claude's default model;
+// RelayReviewer reports whether the generated reviewer command can receive relay
+// credentials. Only a structured reviewer key may use the default model;
 // a legacy command must name its model.
 func RelayReviewer(command string, structured bool) bool {
-	ref, ok := ReviewerRef(command)
-	if ref.Agent != "claude" {
-		return false
-	}
-	if !ok && structured && ref.Model == "" {
-		generated, err := GenerateReviewerCommand(ref.String())
-		ok = err == nil && generated == command
-	}
-	return ok && relayShellLiteral.MatchString(ref.Model) && relayShellLiteral.MatchString(ref.Effort)
+	ref, profile, _ := MatchReviewer(command)
+	return ref.Agent != "" && profile.Relay && (structured || ref.Model != "") &&
+		relayShellLiteral.MatchString(ref.Model) && relayShellLiteral.MatchString(ref.Effort)
 }
 
 var assignment = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)

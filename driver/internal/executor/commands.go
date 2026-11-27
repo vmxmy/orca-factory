@@ -7,9 +7,11 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -212,27 +214,19 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if err = os.WriteFile(name, []byte(input), 0o600); err != nil {
 		return "", tier, errors.New("review input write failed")
 	}
-	spec := runx.Spec{Path: "/bin/sh", Args: []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, name}, Dir: dir, Timeout: 10 * time.Minute}
-	if os.Getenv("AGENT_MODEL_PROXY_TOKEN") != "" {
-		env := os.Environ()
-		spec.Env = make([]string, 0, len(env))
-		for _, entry := range env {
-			if !strings.HasPrefix(entry, "AGENT_MODEL_PROXY_TOKEN=") {
-				spec.Env = append(spec.Env, entry)
-			}
+	spec := runx.Spec{Path: "/bin/sh", Args: config.ReviewerLaunchArgs(command, used, name), Dir: dir, Timeout: 10 * time.Minute}
+	profile, _ := agentcli.Lookup(used.Agent)
+	if len(candidates) == 0 {
+		var matched bool
+		used, profile, matched = config.MatchReviewer(command)
+		if !matched {
+			profile.Relay = true // Legacy shell commands inherit the configured proxy.
 		}
-	} else if c.ModelProxyURL != "" {
-		spec.Env = os.Environ()
 	}
-	if c.ModelProxyURL != "" {
-		spec.Env = append(spec.Env, "ANTHROPIC_BASE_URL="+c.ModelProxyURL)
-	}
+	spec.Env = c.reviewerEnv(profile)
 	b, err := c.runSpec(ctx, spec)
 	if err == nil {
 		return string(b), tier, nil
-	}
-	if ref, ok := config.ReviewerRef(command); ok && len(candidates) == 0 {
-		used = ref
 	}
 	next, retry, modelErr := config.RetryAfterModelError(c.StateRoot, used, candidates, b, err, time.Now())
 	if modelErr != nil {
@@ -241,9 +235,12 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if !retry {
 		return string(b), tier, err
 	}
-	if spec.Args[3], err = config.GenerateReviewerCommand(next.String()); err != nil {
+	if command, err = config.GenerateReviewerCommand(next.String()); err != nil {
 		return "", tier, errors.New("reviewer fallback command invalid")
 	}
+	spec.Args = config.ReviewerLaunchArgs(command, next, name)
+	profile, _ = agentcli.Lookup(next.Agent)
+	spec.Env = c.reviewerEnv(profile)
 	runx.LoggerFrom(ctx).Info("reviewer model unavailable; retrying with next candidate", "tier", tier, "unavailable", used.String(), "selected", next.String())
 	if b, err = c.runSpec(ctx, spec); err != nil {
 		if _, _, modelErr = config.RetryAfterModelError(c.StateRoot, next, nil, b, err, time.Now()); modelErr != nil {
@@ -251,6 +248,21 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 		}
 	}
 	return string(b), tier, err
+}
+
+func (c *Commands) reviewerEnv(profile agentcli.Profile) []string {
+	if profile.Relay && c.ModelProxyURL == "" && os.Getenv("AGENT_MODEL_PROXY_TOKEN") == "" {
+		return nil
+	}
+	env := os.Environ()
+	env = slices.DeleteFunc(env, func(entry string) bool {
+		key, _, _ := strings.Cut(entry, "=")
+		return !profile.InheritEnv(key)
+	})
+	if profile.Relay && c.ModelProxyURL != "" {
+		env = append(env, "ANTHROPIC_BASE_URL="+c.ModelProxyURL)
+	}
+	return env
 }
 
 const (

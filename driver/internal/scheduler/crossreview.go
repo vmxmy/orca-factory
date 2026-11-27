@@ -216,7 +216,7 @@ func (j crossReviewJob) execute(ctx context.Context) crossReviewRecord {
 		go func() {
 			defer wg.Done()
 			// Keep ledger credentials out of reviewer processes.
-			spec := runx.Spec{Path: "/bin/sh", Args: []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", reviewer.command, input}, Dir: checkout, Timeout: crossReviewTimeout,
+			spec := runx.Spec{Path: "/bin/sh", Args: config.ReviewerLaunchArgs(reviewer.command, reviewer.used, input), Dir: checkout, Timeout: crossReviewTimeout,
 				Env: j.reviewerEnv(reviewer.command, reviewer.structured)}
 			out, runErr := j.run(ctx, spec)
 			if runErr != nil {
@@ -229,9 +229,11 @@ func (j crossReviewJob) execute(ctx context.Context) crossReviewRecord {
 					runx.LoggerFrom(ctx).Warn("cross review model error not recorded", "ticket", j.ticketID, "reviewer", reviewer.name, "err", modelErr)
 				}
 				if retry {
-					if spec.Args[3], runErr = config.GenerateReviewerCommand(next.String()); runErr == nil {
+					var command string
+					if command, runErr = config.GenerateReviewerCommand(next.String()); runErr == nil {
 						runx.LoggerFrom(ctx).Info("cross review model unavailable; retrying with next candidate", "ticket", j.ticketID, "reviewer", reviewer.name, "unavailable", reviewer.used.String(), "selected", next.String())
-						spec.Env = j.reviewerEnv(spec.Args[3], reviewer.structured)
+						spec.Args = config.ReviewerLaunchArgs(command, next, input)
+						spec.Env = j.reviewerEnv(command, reviewer.structured)
 						if out, runErr = j.run(ctx, spec); runErr != nil {
 							if _, _, modelErr = config.RetryAfterModelError(j.stateRoot, next, nil, out, runErr, j.now()); modelErr != nil {
 								runx.LoggerFrom(ctx).Warn("cross review model error not recorded", "ticket", j.ticketID, "reviewer", reviewer.name, "err", modelErr)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 )
 
@@ -98,30 +99,29 @@ func RetryAfterModelStatus(stateRoot string, status modelhealth.Status, candidat
 // exactly what GenerateReviewerCommand builds for it, so a reviewer without
 // fallback still records that model's error. Any other command reports false.
 func ReviewerRef(command string) (modelhealth.Ref, bool) {
-	// The shell would strip quoting or expand a value the fields keep verbatim.
-	if strings.ContainsAny(command, "'\"\\$`") {
-		return modelhealth.Ref{}, false
-	}
-	fields := strings.Fields(command)
-	var ref modelhealth.Ref
-	for i, field := range fields {
-		next := ""
-		if i+1 < len(fields) {
-			next = fields[i+1]
+	ref, _, _ := MatchReviewer(command)
+	return ref, ref.Model != ""
+}
+
+// MatchReviewer distinguishes a legacy command from generated commands shared
+// by multiple profiles. The latter match but have no unique ref or relay policy.
+func MatchReviewer(command string) (modelhealth.Ref, agentcli.Profile, bool) {
+	var found modelhealth.Ref
+	var matched agentcli.Profile
+	for _, profile := range agentcli.List() {
+		model, effort, ok, literal := profile.MatchReviewerCommand(command)
+		if !ok {
+			continue
 		}
-		switch {
-		case ref.Agent == "" && (field == "codex" || field == "claude"):
-			ref.Agent = field
-		case field == "-m" || field == "--model":
-			ref.Model = next
-		case field == "--effort":
-			ref.Effort = next
-		case strings.HasPrefix(field, "model_reasoning_effort="):
-			ref.Effort = strings.TrimPrefix(field, "model_reasoning_effort=")
+		if matched.Name != "" {
+			return modelhealth.Ref{}, agentcli.Profile{}, true
+		}
+		matched = profile
+		if literal {
+			found, _ = modelhealth.Parse(profile.Name + ":" + model + ":" + effort)
 		}
 	}
-	generated, err := GenerateReviewerCommand(ref.String())
-	return ref, err == nil && ref.Model != "" && generated == command
+	return found, matched, matched.Name != ""
 }
 
 // ModelParked prefixes the 搁置 reason of a ticket parked because every model

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -23,45 +24,34 @@ type Endpoint struct {
 
 // Probe sends one bounded, read-only request through endpoint.
 func Probe(ctx context.Context, ref Ref, dir string, endpoint Endpoint) Status {
-	var args []string
-	switch ref.Agent {
-	case "codex":
-		args = []string{"exec"}
-		if ref.Model != "" {
-			args = append(args, "-m", ref.Model)
-		}
-		args = append(args, "-c", "model_reasoning_effort=low", "--sandbox", "read-only", "--ephemeral")
-	case "claude":
-		args = []string{"-p"}
-		if ref.Model != "" {
-			args = append(args, "--model", ref.Model)
-		}
-		args = append(args, "--tools", "", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence")
-	default:
+	profile, ok := agentcli.Lookup(ref.Agent)
+	if !ok {
 		return Status{Ref: ref, State: Unknown, Reason: "unsupported_agent", CheckedAt: time.Now()}
 	}
-	args = append(args, "Reply with exactly: ok")
+	args := profile.ProbeArgv(ref.Model, ref.Effort, "Reply with exactly: ok")
 	env := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
 	if !endpoint.Isolated {
 		env = env[:0]
 		for _, value := range os.Environ() {
 			key, _, _ := strings.Cut(value, "=")
 			switch key {
-			case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN", "AGENT_MODEL_PROXY_TOKEN":
+			case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN":
 				continue
 			}
-			env = append(env, value)
+			if profile.InheritEnv(key) {
+				env = append(env, value)
+			}
 		}
 	}
-	if ref.Agent == "claude" && endpoint.BaseURL != "" {
+	if profile.Relay && endpoint.BaseURL != "" {
 		env = append(env, "ANTHROPIC_BASE_URL="+endpoint.BaseURL)
 	}
-	if ref.Agent == "claude" && endpoint.AuthToken != "" {
+	if profile.Relay && endpoint.AuthToken != "" {
 		env = append(env, "ANTHROPIC_AUTH_TOKEN="+endpoint.AuthToken)
 	}
 	binary := endpoint.Binary
 	if binary == "" {
-		binary = ref.Agent
+		binary = profile.Executable()
 	}
 	output, err := runx.Run(ctx, runx.Spec{Path: binary, Args: args, Dir: dir, Env: env, Timeout: ProbeTimeout})
 	var exit *exec.ExitError

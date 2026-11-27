@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -36,6 +38,9 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 		{name: "invalid fallback uses default", fallbackEnv: "invalid", unavailable: []modelhealth.Ref{primary}, wantCalls: []modelhealth.Ref{fallback}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ANTHROPIC_BASE_URL", "https://inherited.invalid")
+			t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
+
 			t.Setenv("AGENT_CORRECTION", tc.primaryEnv)
 			t.Setenv("AGENT_CORRECTION_FALLBACK", tc.fallbackEnv)
 			state := t.TempDir()
@@ -106,6 +111,12 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			}
 			for i, want := range tc.wantCalls {
 				spec := calls[i]
+				for _, entry := range []string{"ANTHROPIC_BASE_URL=https://inherited.invalid", "ANTHROPIC_AUTH_TOKEN=sentinel"} {
+					if slices.Contains(spec.Env, entry) != (want.Agent == "claude") {
+						t.Errorf("unexpected relay environment for %s", want.Agent)
+					}
+				}
+
 				mode, flags := "-p", map[string]string{"--model": want.Model, "--effort": want.Effort}
 				if want.Agent == "codex" {
 					if spec.Path != "/bin/sh" || len(spec.Args) < 5 {
@@ -198,4 +209,128 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			t.Errorf("primary after STALLED and weekly limit: %+v", status)
 		}
 	})
+}
+
+func TestReviewerRelayChangesWithCandidate(t *testing.T) {
+	const proxy = "https://configured.invalid"
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://inherited.invalid")
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, order := range [][]string{{"claude", "codex"}, {"codex", "claude"}} {
+		refs := []modelhealth.Ref{{Agent: order[0], Model: "first", Effort: "high"}, {Agent: order[1], Model: "second", Effort: "high"}}
+		command, err := config.GenerateReviewerCommand(refs[0].String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		c := Commands{ReviewerCommand: command, ReviewerCandidates: refs, StateRoot: t.TempDir(), ModelProxyURL: proxy}
+		c.Run = withReviewerRole(t, func(_ context.Context, s runx.Spec) ([]byte, error) {
+			if s.Path != "/bin/sh" {
+				return nil, nil
+			}
+			agent := order[calls]
+			calls++
+			for _, entry := range []string{"ANTHROPIC_BASE_URL=" + proxy, "ANTHROPIC_AUTH_TOKEN=sentinel"} {
+				if slices.Contains(s.Env, entry) != (agent == "claude") {
+					t.Errorf("wrong relay environment for %s on call %d", agent, calls)
+				}
+			}
+			if agent == "codex" && slices.Contains(s.Env, "ANTHROPIC_BASE_URL=https://inherited.invalid") {
+				t.Error("non-relay reviewer inherited the proxy URL")
+			}
+			if calls == 1 {
+				return limit, errors.New("model unavailable")
+			}
+			return nil, nil
+		})
+		if _, _, err := c.Review(t.Context(), t.TempDir(), "origin/main", "HEAD", nil); err != nil || calls != 2 {
+			t.Fatalf("review calls=%d, err=%v", calls, err)
+		}
+	}
+}
+
+func TestReviewerWithoutCandidatesUsesProfileRelay(t *testing.T) {
+	agentcli.Configure(map[string]agentcli.Profile{
+		"local":  {Binary: "shared", ReviewArgs: []string{"--model", "{model}"}},
+		"inline": {Binary: "inline", ReviewArgs: []string{"--model={model}", "--level={effort}"}},
+		"remote": {Binary: "shared", ReviewArgs: []string{"--model", "{model}"}, Relay: true},
+	})
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	for _, role := range []string{"codex::", "codex:model$[2]:high", "codex:model with spaces:high", "local:chosen:high", "local:two words:high", "inline:two words:level with quote'"} {
+		t.Run(role, func(t *testing.T) {
+			t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
+			command, err := config.GenerateReviewerCommand(role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const proxy = "https://configured.invalid"
+			c := Commands{ReviewerCommand: command, ModelProxyURL: proxy}
+			called := false
+			c.Run = withReviewerRole(t, func(_ context.Context, s runx.Spec) ([]byte, error) {
+				if s.Path == "/bin/sh" {
+					called = true
+					if s.Env == nil || slices.Contains(s.Env, "ANTHROPIC_AUTH_TOKEN=sentinel") || slices.Contains(s.Env, "ANTHROPIC_BASE_URL="+proxy) {
+						t.Error("non-relay reviewer received relay settings")
+					}
+				}
+				return nil, nil
+			})
+			if _, _, err := c.Review(t.Context(), t.TempDir(), "origin/main", "HEAD", nil); err != nil || !called {
+				t.Fatalf("review called=%t, err=%v", called, err)
+			}
+		})
+	}
+}
+
+func TestReviewerKeepsModelArgumentOnRetry(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, file := range []string{"primary1", "fallback1"} {
+		if err := os.WriteFile(filepath.Join(dir, file), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\nprintf '%s' \"$3\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []modelhealth.Ref{{Agent: "claude", Model: "primary[1m]"}, {Agent: "claude", Model: "fallback[1m]"}}
+	command, err := config.GenerateReviewerCommand(refs[0].String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Commands{ReviewerCommand: command, ReviewerCandidates: refs, StateRoot: t.TempDir()}
+	var models []string
+	c.Run = withReviewerRole(t, func(ctx context.Context, s runx.Spec) ([]byte, error) {
+		if s.Path != "/bin/sh" {
+			return nil, nil
+		}
+		ref := refs[len(models)]
+		wantArgv := []string{"claude", "-p", "--model", ref.Model, "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config"}
+		if !slices.Equal(s.Args[3:], wantArgv) {
+			t.Errorf("reviewer executable and arguments = %q, want %q", s.Args[3:], wantArgv)
+		}
+		s.Dir = dir
+		out, err := runx.Run(ctx, s)
+		if err != nil {
+			return out, err
+		}
+		models = append(models, string(out))
+		if len(models) == 1 {
+			return limit, errors.New("model unavailable")
+		}
+		return out, nil
+	})
+	if _, _, err = c.Review(t.Context(), dir, "origin/main", "HEAD", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(models, []string{refs[0].Model, refs[1].Model}) {
+		t.Errorf("reviewer received models %q", models)
+	}
 }

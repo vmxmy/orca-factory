@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
@@ -73,6 +74,10 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 			return errors.New("all correction model candidates unavailable")
 		}
 	}
+	profile, ok := agentcli.Lookup(ref.Agent)
+	if !ok {
+		return fmt.Errorf("unsupported correction agent %q", ref.Agent)
+	}
 	// A coordinator subprocess must not inherit this worker's Orca hooks.
 	env := make([]string, 0)
 	for _, entry := range os.Environ() {
@@ -81,15 +86,13 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 		case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN":
 			continue
 		}
-		env = append(env, entry)
+		if profile.InheritEnv(key) {
+			env = append(env, entry)
+		}
 	}
-	spec := runx.Spec{Path: ref.Agent, Dir: req.Repo, Env: env, Timeout: 10 * time.Minute}
-	switch ref.Agent {
-	case "claude":
-		spec.Args = []string{"-p", prompt, "--model", ref.Model, "--effort", ref.Effort,
-			"--permission-mode", "acceptEdits", "--add-dir", filepath.Dir(req.Path),
-			"--allowedTools", "Read,Grep,Glob,Write,Edit", "--tools", "Read,Grep,Glob,Write,Edit"}
-	case "codex":
+	spec := runx.Spec{Path: profile.Executable(), Args: profile.CorrectionArgv(ref.Model, ref.Effort, prompt, filepath.Dir(req.Path)),
+		Dir: req.Repo, Env: env, Timeout: 10 * time.Minute}
+	if profile.CorrectionStdin() {
 		dir, err := os.MkdirTemp("", "correction-input-*")
 		if err != nil {
 			return err
@@ -104,10 +107,7 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 			return err
 		}
 		spec.Path = "/bin/sh"
-		spec.Args = []string{"-c", `exec "$@" < "$0"`, input, "codex", "exec", "--model", ref.Model, "-c", "model_reasoning_effort=" + ref.Effort,
-			"--sandbox", "workspace-write", "--add-dir", filepath.Dir(req.Path), "--ephemeral", "-"}
-	default:
-		return errors.New("correction agent must be claude or codex")
+		spec.Args = append([]string{"-c", `exec "$@" < "$0"`, input, profile.Executable()}, spec.Args...)
 	}
 	output, err := c.runSpec(ctx, spec)
 	if err == nil {

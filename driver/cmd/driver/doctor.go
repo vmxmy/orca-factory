@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
@@ -83,6 +84,7 @@ type healthCheck struct {
 // healthReport mirrors `orca-factory doctor --json`: a top-level object keyed
 // by name plus an errors string array. OF-128 consumes this shape.
 type healthReport struct {
+	Agents []string               `json:"agents,omitempty"`
 	Checks map[string]healthCheck `json:"checks"`
 	Errors []string               `json:"errors"`
 }
@@ -235,7 +237,7 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		checks["ledger"] = p.checkLedger(ctx, eligible)
 		checks["models"] = p.checkModels(ctx, eligible, discovered.Rejected)
 	}
-	report := healthReport{Checks: checks, Errors: []string{}}
+	report := healthReport{Agents: agentcli.Names(), Checks: checks, Errors: []string{}}
 	for _, name := range doctorChecks {
 		if checks[name].unprobed {
 			report.Errors = append(report.Errors, name+": "+checks[name].Reason)
@@ -249,6 +251,9 @@ func writeHealth(out io.Writer, report healthReport, asJSON bool, names []string
 		return json.NewEncoder(out).Encode(report)
 	}
 	var b strings.Builder
+	if len(report.Agents) > 0 {
+		fmt.Fprintln(&b, "Agents", strings.Join(report.Agents, ", "))
+	}
 	fmt.Fprintf(&b, "%-13s %-8s %s\n", "CHECK", "STATUS", "REASON")
 	for _, name := range names {
 		check := report.Checks[name]
@@ -881,11 +886,19 @@ func (s doctorModelSettings) unprobedModels(reason string) healthCheck {
 // probeKey resolves an unset Binary on PATH, so the PATH agent and its absolute
 // path share one probe.
 func (r doctorModelRole) probeKey() string {
+	profile, _ := agentcli.Lookup(r.ref.Agent)
 	binary := r.endpoint.Binary
 	if binary == "" {
-		binary, _ = exec.LookPath(r.ref.Agent)
+		binary, _ = exec.LookPath(profile.Executable())
 	}
-	return strings.Join([]string{r.ref.Key(), binary, r.endpoint.BaseURL, r.endpoint.AuthToken, strconv.FormatBool(r.endpoint.Isolated)}, "\x00")
+	effort := ""
+	for _, arg := range profile.ProbeArgs {
+		if strings.Contains(arg, "{effort}") {
+			effort = r.ref.Effort
+			break
+		}
+	}
+	return strings.Join([]string{r.ref.Key(), effort, binary, r.endpoint.BaseURL, r.endpoint.AuthToken, strconv.FormatBool(r.endpoint.Isolated)}, "\x00")
 }
 
 func invalidModelRole(name, raw string) doctorModelRole {
@@ -932,10 +945,6 @@ func workerModelRoles(env map[string]string) []doctorModelRole {
 		}
 	}
 	return roles
-}
-
-func supportedModelAgent(agent string) bool {
-	return agent == "codex" || agent == "claude"
 }
 
 func (s doctorModelSettings) intakeRole(env map[string]string, claudeTier, pi string) doctorModelRole {
@@ -989,7 +998,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 			if role.Role == "reviewer" {
 				hasReviewer, reviewer = true, modelRole
 			}
-			if ref.Agent == "claude" {
+			if profile, _ := agentcli.Lookup(ref.Agent); profile.Relay {
 				modelRole.endpoint.BaseURL = s.proxyURL
 				if s.proxyErr != nil {
 					modelRole.reason = "model_proxy_invalid"
@@ -1000,7 +1009,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 			modelRole.endpoint.Isolated = true
 			hasSecondReviewer = true
 		case "resolver":
-			if !supportedModelAgent(ref.Agent) || strings.Count(role.Raw, ":") > 2 {
+			if !agentcli.Registered(ref.Agent) || strings.Count(role.Raw, ":") > 2 {
 				modelRole = invalidModelRole(role.Role, role.Raw)
 			}
 		case "intake":
@@ -1022,7 +1031,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	if raw := env["AGENT_ROLE_RESOLVER_TOP"]; raw != "" {
 		ref, err := modelhealth.Parse(raw)
 		role := doctorModelRole{name: "resolver_top", ref: ref}
-		if err != nil || !supportedModelAgent(ref.Agent) || ref.Model == "" || ref.Effort == "" {
+		if err != nil || !agentcli.Registered(ref.Agent) || ref.Model == "" || ref.Effort == "" {
 			role = invalidModelRole("resolver_top", raw)
 		}
 		roles = append(roles, role)
@@ -1033,7 +1042,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	}
 	roles = append(roles, s.intakeRole(env, intakeTier, pi))
 	for i, role := range roles {
-		if role.endpoint.Isolated && role.ref.Agent == "claude" {
+		if profile, _ := agentcli.Lookup(role.ref.Agent); role.endpoint.Isolated && profile.Relay {
 			if s.relayErr != nil {
 				roles[i].reason = "model_relay_invalid"
 				continue
@@ -1047,7 +1056,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 			roles[i].endpoint.BaseURL = s.relayEnv["ANTHROPIC_BASE_URL"]
 			roles[i].endpoint.AuthToken = s.relayEnv["ANTHROPIC_AUTH_TOKEN"]
 		}
-		if role.reason == "" && !supportedModelAgent(role.ref.Agent) {
+		if role.reason == "" && !agentcli.Registered(role.ref.Agent) {
 			roles[i].reason = "unsupported_agent"
 		}
 	}

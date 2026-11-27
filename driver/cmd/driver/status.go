@@ -81,15 +81,15 @@ func freshStatus(ctx context.Context, path string) (status.View, error) {
 	if err != nil {
 		return status.View{}, err
 	}
-	repo, err := config.LoadRepository(path)
-	if err != nil {
-		return status.View{}, err
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return status.View{}, err
 	}
 	cfg, err := config.Load(home)
+	if err != nil {
+		return status.View{}, err
+	}
+	repo, err := config.LoadRepository(path)
 	if err != nil {
 		return status.View{}, err
 	}
