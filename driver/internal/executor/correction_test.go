@@ -40,9 +40,6 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ANTHROPIC_BASE_URL", "https://inherited.invalid")
 			t.Setenv("ANTHROPIC_AUTH_TOKEN", "sentinel")
-
-			t.Setenv("AGENT_CORRECTION", tc.primaryEnv)
-			t.Setenv("AGENT_CORRECTION_FALLBACK", tc.fallbackEnv)
 			state := t.TempDir()
 			registry, err := modelhealth.Open(state)
 			if err != nil {
@@ -66,7 +63,7 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 			writeRole(t, e.Config.Repo, "correction.md", "CORRECTION ROLE\n")
 			var calls []runx.Spec
 			limitErr := errors.New("exit status 1")
-			commands := &Commands{StateRoot: state, Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
+			commands := &Commands{StateRoot: state, CorrectionCandidates: correctionCandidates(tc.primaryEnv, tc.fallbackEnv), Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
 				calls = append(calls, spec)
 				if tc.weeklyLimit && len(calls) == 1 {
 					return []byte("You've hit your weekly limit"), limitErr
@@ -152,7 +149,6 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 		})
 	}
 	t.Run("codex receives prompt on stdin", func(t *testing.T) {
-		t.Setenv("AGENT_CORRECTION", fallback.String())
 		repo, state := t.TempDir(), t.TempDir()
 		req := CorrectionRequest{Repo: repo, Path: filepath.Join(state, "correction.md"), Number: 1, Cause: "gate red", Brief: "first line\n$(exit 91) 'second line'"}
 		writeRole(t, repo, "correction.md", "CORRECTION ROLE\n")
@@ -163,7 +159,7 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 		t.Setenv("PATH", repo+string(os.PathListSeparator)+os.Getenv("PATH"))
 		capture := filepath.Join(state, "stdin")
 		t.Setenv("CAPTURE", capture)
-		commands := Commands{StateRoot: state}
+		commands := Commands{StateRoot: state, CorrectionCandidates: correctionCandidates(fallback.String(), "")}
 		if err := commands.Correction(context.Background(), req); err != nil {
 			t.Fatal(err)
 		}
@@ -177,15 +173,13 @@ func TestCorrectionSessionSelectsModelFromRegistry(t *testing.T) {
 		}
 	})
 	t.Run("stalled before weekly limit", func(t *testing.T) {
-		t.Setenv("AGENT_CORRECTION", primary.String())
-		t.Setenv("AGENT_CORRECTION_FALLBACK", fallback.String())
 		state := t.TempDir()
 		req := CorrectionRequest{Repo: t.TempDir(), Path: filepath.Join(state, "correction.md"), Number: 2}
 		writeRole(t, req.Repo, "correction.md", "CORRECTION ROLE\n")
 		const verdict = "STALLED: 同一断言重复失败"
 		limitErr := errors.New("exit status 1")
 		calls := 0
-		commands := Commands{StateRoot: state, Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
+		commands := Commands{StateRoot: state, CorrectionCandidates: correctionCandidates(primary.String(), fallback.String()), Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
 			calls++
 			if calls > 1 {
 				t.Fatalf("started %q after the primary wrote STALLED", spec.Path)
@@ -332,5 +326,55 @@ func TestReviewerKeepsModelArgumentOnRetry(t *testing.T) {
 	}
 	if !slices.Equal(models, []string{refs[0].Model, refs[1].Model}) {
 		t.Errorf("reviewer received models %q", models)
+	}
+}
+
+func TestCorrectionFallbackCandidateList(t *testing.T) {
+	home, repo, state := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", state)
+	primary := modelhealth.Ref{Agent: "claude", Model: "repo-primary", Effort: "high"}
+	first := modelhealth.Ref{Agent: "codex", Model: "first-fallback", Effort: "high"}
+	second := modelhealth.Ref{Agent: "claude", Model: "second-fallback", Effort: "medium"}
+	for path, body := range map[string]string{
+		filepath.Join(home, ".config/orca-factory/profiles.toml"):  "default='daily'\n[profile.daily]\nAGENT_CORRECTION_FALLBACK='" + first.String() + " " + second.String() + "'\n",
+		filepath.Join(repo, "scripts/agent-gates/agent-graph.env"): "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\nAGENT_TIER_DEFAULT=codex:worker:high\nAGENT_CORRECTION=" + primary.String() + "\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRole(t, repo, "correction.md", "CORRECTION ROLE\n")
+	registry, err := modelhealth.Open(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, ref := range []modelhealth.Ref{primary, first} {
+		if err := registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor, _, err := repositoryExecutor(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := executor.Tools.(*Commands)
+	var calls []runx.Spec
+	commands.Run = func(_ context.Context, spec runx.Spec) ([]byte, error) {
+		calls = append(calls, spec)
+		return nil, nil
+	}
+	if err := commands.Correction(context.Background(), CorrectionRequest{Repo: repo, Path: filepath.Join(state, "correction.md"), Cause: "gate red", Number: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].Path != second.Agent {
+		t.Fatalf("correction calls=%+v, want one %s session", calls, second.Agent)
+	}
+	if pos := slices.Index(calls[0].Args, "--model"); pos < 0 || pos+1 >= len(calls[0].Args) || calls[0].Args[pos+1] != second.Model {
+		t.Fatalf("correction args=%q, want --model %s", calls[0].Args, second.Model)
 	}
 }

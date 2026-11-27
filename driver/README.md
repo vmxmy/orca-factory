@@ -738,7 +738,7 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环�
 | 需求助手 | `intake.Runner.Turn`（每轮） | 网关 stderr `intake model falls back: configured=… selected=…` |
 | 接入 Agent | `onboardAgentArgs`（启动接入 Agent 时） | stderr `onboard model falls back: configured=… selected=…` |
 
-每轮写 correction 前，执行器先查模型可用性登记。环境变量 `AGENT_CORRECTION` 指定主选（默认 `claude:claude-opus-5-5:high`），`AGENT_CORRECTION_FALLBACK` 指定兜底（默认 `codex:gpt-6.2-astra:high`）。主选在冷却时用兜底。登记读取失败或两者都在冷却时，执行器跳过会话，把失败原因和本轮已有的失败摘要写进子任务简报。
+每轮写 correction 前，执行器先查模型可用性登记。`AGENT_CORRECTION` 指定主选（默认 `claude:claude-opus-5-5:high`），`AGENT_CORRECTION_FALLBACK` 指定兜底，是空格分隔的有序列表（默认 `codex:gpt-6.2-astra:high`）。两个键在仓库 `agent-graph.env` 或 `profiles.toml` 配置。主选在冷却时按顺序取第一个未冷却的兜底。登记读取失败或全部候选都在冷却时，执行器跳过会话，把失败原因和本轮已有的失败摘要写进子任务简报。
 
 终审的处置记录固定档位后，新一轮派工仍先按 OF-583 跟随当前配置，再按兜底候选挑选可用模型。已派工轮次的恢复沿用冻结记录，不换模型。`orca-factory-driver config` 在每个仓库下的「兜底候选」中按键列出角色与档的全部 `_FALLBACK`，包括终审与 max 等升档档。施工与处置选中 model 为空的候选时不传 effort；终审候选必须写出 model 与 effort。
 

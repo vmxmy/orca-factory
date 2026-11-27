@@ -180,3 +180,18 @@ func TestFallbackKeysParse(t *testing.T) {
 		t.Fatal("non-claude intake fallback accepted")
 	}
 }
+
+func TestProfileAcceptsCorrectionFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profiles.toml")
+	valid := "[profile.daily]\nAGENT_CORRECTION = \"claude:claude-opus-5-5:high\"\nAGENT_CORRECTION_FALLBACK = \"codex:gpt-6.2-astra:high claude:claude-sonnet-5-5:high\"\n"
+	writeProfileTestFile(t, path, valid)
+	if _, err := readProfiles(path); err != nil {
+		t.Fatalf("correction fallback list rejected: %v", err)
+	}
+	for _, invalid := range []string{"AGENT_CORRECTION_FALLBACK = \"codex:gpt-6.2-astra:high broken\"", "AGENT_CORRECTION = \"broken\""} {
+		writeProfileTestFile(t, path, "[profile.daily]\n"+invalid+"\n")
+		if _, err := readProfiles(path); err == nil {
+			t.Fatalf("invalid correction profile accepted: %s", invalid)
+		}
+	}
+}
