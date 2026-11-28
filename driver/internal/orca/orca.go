@@ -129,8 +129,14 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	if timeout < 0 {
 		return nil, invalid("orca timeout must be positive")
 	}
+	args = append(args, "--json")
+	// Orca 1.4.280 prints a concise orchestration view by default; --full keeps
+	// the records the receipt parsers and recorded samples use.
+	if args[0] == "orchestration" {
+		args = append(args, "--full")
+	}
 	// runx redacts free-text arguments and records process diagnostics.
-	output, runErr := runx.Run(ctx, runx.Spec{Path: path, Args: append(args, "--json"), Timeout: timeout})
+	output, runErr := runx.Run(ctx, runx.Spec{Path: path, Args: args, Timeout: timeout})
 	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 		return nil, infra.Classify(runErr)
 	}
