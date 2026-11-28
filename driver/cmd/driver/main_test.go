@@ -21,7 +21,9 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	cleanup := testsupport.IsolateStatus()
+	cleanupHome := testsupport.IsolateHome()
 	code := m.Run()
+	cleanupHome()
 	cleanup()
 	os.Exit(code)
 }

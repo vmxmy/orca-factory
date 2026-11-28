@@ -132,7 +132,7 @@ func (c *Commands) orcaCall(ctx context.Context, args ...string) (orca.Receipt, 
 	if err != nil {
 		return nil, errors.New("cannot resolve Orca binary")
 	}
-	b, err := c.run(ctx, "", path, append([]string{"orchestration"}, append(args, "--json")...)...)
+	b, err := c.run(ctx, "", path, append([]string{"orchestration"}, append(args, "--json", "--full")...)...)
 	if err != nil {
 		return nil, err
 	}
