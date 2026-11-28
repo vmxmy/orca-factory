@@ -97,6 +97,9 @@ func TestRelease(t *testing.T) {
 					if !strings.Contains(body, "1234567") || !strings.Contains(body, "doctor --json") {
 						t.Fatalf("missing confirmed facts: %s", body)
 					}
+					if !strings.Contains(body, "\n阶段: 已合并\n归属: 无\n") {
+						t.Fatalf("merge ownership not released: %s", body)
+					}
 					return call("comment")
 				},
 				done: func(_ context.Context, id string) error {
