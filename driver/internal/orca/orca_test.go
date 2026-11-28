@@ -59,16 +59,16 @@ func TestCommands(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"run", func(c *Client) (any, error) { return c.RunCreate(ctx, firstID, "build it") }, []string{"orchestration", "run-create", "--objective", "build it", "--retry-request", firstID, "--json"}, `{"run":{"id":"run_one","objective":"build it"}}`},
+		{"run", func(c *Client) (any, error) { return c.RunCreate(ctx, firstID, "build it") }, []string{"orchestration", "run-create", "--objective", "build it", "--retry-request", firstID, "--json", "--full"}, `{"run":{"id":"run_one","objective":"build it"}}`},
 		{"start", func(c *Client) (any, error) {
 			return c.WorkerStart(ctx, firstID, StartOptions{Run: "run_one", Spec: "do work", Worktree: "new-top-level", Agent: "codex", Model: "m", Effort: "high", Setup: "skip", Name: "impl", Repo: "path:/repo", BaseBranch: "origin/main"})
-		}, []string{"orchestration", "worker-start", "--run", "run_one", "--spec", "do work", "--worktree", "new-top-level", "--agent", "codex", "--model", "m", "--effort", "high", "--setup", "skip", "--name", "impl", "--repo", "path:/repo", "--base-branch", "origin/main", "--timeout-ms", "300000", "--retry-request", firstID, "--json"}, `{"taskId":"task_one","dispatchId":"ctx_one","status":"ready","terminalHandle":"term_one"}`},
+		}, []string{"orchestration", "worker-start", "--run", "run_one", "--spec", "do work", "--worktree", "new-top-level", "--agent", "codex", "--model", "m", "--effort", "high", "--setup", "skip", "--name", "impl", "--repo", "path:/repo", "--base-branch", "origin/main", "--timeout-ms", "300000", "--retry-request", firstID, "--json", "--full"}, `{"taskId":"task_one","dispatchId":"ctx_one","status":"ready","terminalHandle":"term_one"}`},
 		{"read", func(c *Client) (any, error) {
 			return c.WorkerRead(ctx, ReadOptions{Dispatch: "ctx_one", Source: "transcript", Cursor: "old", Limit: 5})
-		}, []string{"orchestration", "worker-read", "--dispatch", "ctx_one", "--source", "transcript", "--cursor", "old", "--limit", "5", "--json"}, `{"dispatchId":"ctx_one","source":"transcript","cursor":"next","transcript":{"messages":[{"role":"assistant"}]}}`},
+		}, []string{"orchestration", "worker-read", "--dispatch", "ctx_one", "--source", "transcript", "--cursor", "old", "--limit", "5", "--json", "--full"}, `{"dispatchId":"ctx_one","source":"transcript","cursor":"next","transcript":{"messages":[{"role":"assistant"}]}}`},
 		{"list", func(c *Client) (any, error) {
 			return c.WorkerList(ctx, ListOptions{Run: "run_one", TerminalState: "reclaimable", Cursor: "old", Limit: 5, IncludeRemote: true})
-		}, []string{"orchestration", "worker-list", "--run", "run_one", "--terminal-state", "reclaimable", "--cursor", "old", "--limit", "5", "--include-remote", "--json"}, `{"workers":[{"dispatchId":"ctx_one","taskId":"task_one","terminalState":"reclaimable"}],"page":{"hasMore":true,"nextCursor":"page2"}}`},
+		}, []string{"orchestration", "worker-list", "--run", "run_one", "--terminal-state", "reclaimable", "--cursor", "old", "--limit", "5", "--include-remote", "--json", "--full"}, `{"workers":[{"dispatchId":"ctx_one","taskId":"task_one","terminalState":"reclaimable"}],"page":{"hasMore":true,"nextCursor":"page2"}}`},
 		{"workers-two-pages", func(c *Client) (any, error) {
 			workers, err := c.Workers(ctx, ListOptions{Run: "run_one", IncludeRemote: true})
 			if err != nil {
@@ -80,8 +80,8 @@ func TestCommands(t *testing.T) {
 			}
 			return dispatches, nil
 		}, nil, `["ctx_one","ctx_two"]`},
-		{"release", func(c *Client) (any, error) { return c.WorkerRelease(ctx, firstID, "ctx_one") }, []string{"orchestration", "worker-release", "--dispatch", "ctx_one", "--retry-request", firstID, "--json"}, `{"dispatchId":"ctx_one","status":"released"}`},
-		{"stop", func(c *Client) (any, error) { return c.WorkerStop(ctx, firstID, "ctx_one") }, []string{"orchestration", "worker-stop", "--dispatch", "ctx_one", "--retry-request", firstID, "--json"}, `{"dispatchId":"ctx_one","state":"stopped"}`},
+		{"release", func(c *Client) (any, error) { return c.WorkerRelease(ctx, firstID, "ctx_one") }, []string{"orchestration", "worker-release", "--dispatch", "ctx_one", "--retry-request", firstID, "--json", "--full"}, `{"dispatchId":"ctx_one","status":"released"}`},
+		{"stop", func(c *Client) (any, error) { return c.WorkerStop(ctx, firstID, "ctx_one") }, []string{"orchestration", "worker-stop", "--dispatch", "ctx_one", "--retry-request", firstID, "--json", "--full"}, `{"dispatchId":"ctx_one","state":"stopped"}`},
 		{"terminal-create", func(c *Client) (any, error) {
 			return c.TerminalCreate(ctx, TerminalOptions{Worktree: "current", Title: "runner", Command: "codex"})
 		}, []string{"terminal", "create", "--worktree", "current", "--title", "runner", "--command", "codex", "--json"}, `{"terminal":{"handle":"term_one"}}`},
@@ -132,7 +132,7 @@ func TestTaskListWorkerReport(t *testing.T) {
 	if !reflect.DeepEqual(report, want) {
 		t.Fatalf("report %#v", report)
 	}
-	argv(t, log, []string{"orchestration", "task-list", "--run", "run_one", "--json", "END"})
+	argv(t, log, []string{"orchestration", "task-list", "--run", "run_one", "--json", "--full", "END"})
 }
 
 // Legacy or uncounted task lists stay readable for every caller; only the
@@ -164,7 +164,7 @@ func TestReconcile(t *testing.T) {
 			if got.State != state {
 				t.Fatalf("state %s", got.State)
 			}
-			want := []string{"orchestration", "request-show", "--request", "request_one", "--json", "END"}
+			want := []string{"orchestration", "request-show", "--request", "request_one", "--json", "--full", "END"}
 			if state == "completed" {
 				if string(got.Receipt) != `{"taskId":"task_one","dispatchId":"ctx_one","status":"ready"}` || len(got.Tasks) != 0 {
 					t.Fatalf("receipt %s", got.Receipt)
@@ -173,7 +173,7 @@ func TestReconcile(t *testing.T) {
 				if len(got.Tasks) != 1 || got.Tasks[0].ID != "task_one" || len(got.Receipt) != 0 {
 					t.Fatalf("reconciliation %#v", got)
 				}
-				want = append(want, "orchestration", "task-list", "--run", "run_one", "--json", "END")
+				want = append(want, "orchestration", "task-list", "--run", "run_one", "--json", "--full", "END")
 			}
 			argv(t, log, want)
 		})
@@ -195,7 +195,7 @@ func TestFailedStartRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	argv(t, log, []string{"orchestration", "worker-start", "--task", "task_one", "--worktree", "current", "--agent", "codex", "--timeout-ms", "300000", "--retry-request", firstID, "--json", "END", "orchestration", "worker-start", "--task", "task_one", "--worktree", "current", "--agent", "codex", "--retry-of", "ctx_failed", "--timeout-ms", "300000", "--retry-request", secondID, "--json", "END"})
+	argv(t, log, []string{"orchestration", "worker-start", "--task", "task_one", "--worktree", "current", "--agent", "codex", "--timeout-ms", "300000", "--retry-request", firstID, "--json", "--full", "END", "orchestration", "worker-start", "--task", "task_one", "--worktree", "current", "--agent", "codex", "--retry-of", "ctx_failed", "--timeout-ms", "300000", "--retry-request", secondID, "--json", "--full", "END"})
 }
 func TestErrorsAndBounds(t *testing.T) {
 	for _, scenario := range []string{"malformed", "failure", "unavailable", "timeout"} {
