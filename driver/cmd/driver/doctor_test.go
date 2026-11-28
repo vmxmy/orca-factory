@@ -731,6 +731,31 @@ func TestDoctorModelsCountsFallbackCandidates(t *testing.T) {
 	}
 }
 
+func TestDoctorModelsFallbackEndpointFollowsCandidate(t *testing.T) {
+	const proxy = "http://127.0.0.1:4000"
+	s := doctorModelSettings{proxyURL: proxy}
+	roles := s.modelRoles(projects.Project{Repository: config.Repository{Env: map[string]string{
+		"AGENT_ROLE_REVIEWER": "codex:primary:high", "AGENT_ROLE_REVIEWER_FALLBACK": "claude:backup:high codex:spare:high",
+		"AGENT_INTAKE_PI": "anthropic/fable:high", "AGENT_ROLE_INTAKE_FALLBACK": "claude:backup:high",
+	}}})
+	want := map[string]string{"primary": "", "backup": proxy, "spare": ""}
+	reviewers, intakes := 0, 0
+	for _, role := range roles {
+		switch role.name {
+		case "reviewer":
+			reviewers++
+			if got := role.endpoint.BaseURL; got != want[role.ref.Model] {
+				t.Errorf("reviewer %s BaseURL = %q, want %q", role.ref, got, want[role.ref.Model])
+			}
+		case "intake":
+			intakes++
+		}
+	}
+	if reviewers != 3 || intakes != 1 {
+		t.Fatalf("reviewer rows = %d, intake rows = %d: %+v", reviewers, intakes, roles)
+	}
+}
+
 func TestDoctorModelsProbesDuringCooldown(t *testing.T) {
 	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
 	root := t.TempDir()
