@@ -953,13 +953,16 @@ func (s doctorModelSettings) intakeRole(env map[string]string, claudeTier, pi st
 	if claudeTier == "" {
 		return doctorModelRole{name: "intake", reason: "not_configured"}
 	}
-	model, effort, err := tierParts(env)
+	primary, _, err := tierParts(env)
 	if err != nil || s.driverEnvErr != nil || s.intakeClaudeErr != nil {
 		return invalidModelRole("intake", claudeTier)
 	}
 	if pi == "" {
-		return doctorModelRole{name: "intake", ref: modelhealth.Ref{Agent: "claude", Model: model, Effort: effort},
-			endpoint: modelhealth.Endpoint{Binary: s.intakeClaude, Isolated: true}}
+		endpoint := modelhealth.Endpoint{Isolated: true}
+		if primary.Agent == "claude" {
+			endpoint.Binary = s.intakeClaude
+		}
+		return doctorModelRole{name: "intake", ref: primary, endpoint: endpoint}
 	}
 	provider, model, thinking, err := intake.ParsePiTier(pi)
 	if err != nil {
@@ -1062,6 +1065,13 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		for _, ref := range refs {
 			candidate := role
 			candidate.ref, candidate.key = ref, ""
+			// AGENT_INTAKE_CLAUDE runs claude candidates only.
+			if role.name == "intake" && intakeAgent(role.ref.Agent) {
+				candidate.endpoint.Binary = ""
+				if ref.Agent == "claude" {
+					candidate.endpoint.Binary = s.intakeClaude
+				}
+			}
 			roles = append(roles, candidate)
 		}
 	}

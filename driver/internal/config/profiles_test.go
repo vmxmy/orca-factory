@@ -181,6 +181,21 @@ func TestFallbackKeysParse(t *testing.T) {
 	}
 }
 
+func TestProfileAcceptsAntigravityIntakeFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profiles.toml")
+	for value, accepted := range map[string]bool{
+		"antigravity:gemini-4-neon-high:high claude:claude-sonnet-5-5:high": true,
+		"codex:gpt-6-astra:high": false,
+	} {
+		if err := os.WriteFile(path, []byte("[profile.daily]\nAGENT_ROLE_INTAKE_FALLBACK = \""+value+"\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readProfiles(path); (err == nil) != accepted {
+			t.Errorf("AGENT_ROLE_INTAKE_FALLBACK=%q: err=%v, want accepted=%v", value, err, accepted)
+		}
+	}
+}
+
 func TestProfileAcceptsCorrectionFallback(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "profiles.toml")
 	valid := "[profile.daily]\nAGENT_CORRECTION = \"claude:claude-opus-5-5:high\"\nAGENT_CORRECTION_FALLBACK = \"codex:gpt-6.2-astra:high claude:claude-sonnet-5-5:high\"\n"

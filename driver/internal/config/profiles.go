@@ -159,7 +159,8 @@ func IsFallbackKey(key string) bool {
 
 // validFallback checks a <key>_FALLBACK list against the role its base key
 // configures: reviewer candidates must generate a reviewer command, and
-// intake candidates must be claude. Errors carry candidate positions only.
+// intake candidates must be claude or antigravity. Errors carry candidate
+// positions only.
 func validFallback(base, value string) error {
 	if !IsFallbackKey(FallbackKey(base)) {
 		return errors.New("fallback requires a role or tier key")
@@ -171,8 +172,8 @@ func validFallback(base, value string) error {
 	for i, ref := range refs {
 		switch base {
 		case "AGENT_ROLE_INTAKE":
-			if ref.Agent != "claude" {
-				return fmt.Errorf("fallback candidate %d: intake fallback candidates must be claude", i+1)
+			if ref.Agent != "claude" && ref.Agent != "antigravity" {
+				return fmt.Errorf("fallback candidate %d: intake fallback candidates must be claude or antigravity", i+1)
 			}
 		case "AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_SECOND_REVIEWER":
 			if _, err := GenerateReviewerCommand(ref.String()); err != nil {

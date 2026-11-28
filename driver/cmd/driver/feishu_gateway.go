@@ -72,34 +72,32 @@ func loadGatewaySettings() (map[string]string, error) {
 	return settings, nil
 }
 
-// tierParts splits a repository's AGENT_ROLE_INTAKE (or AGENT_TIER_STRONG
-// fallback) "claude:model:effort" tier into its model and effort.
-func tierParts(env map[string]string) (model, effort string, err error) {
+// tierParts reads a repository's intake candidates: AGENT_ROLE_INTAKE (or the
+// AGENT_TIER_STRONG fallback) and AGENT_ROLE_INTAKE_FALLBACK. Every candidate
+// runs claude or antigravity.
+func tierParts(env map[string]string) (primary modelhealth.Ref, fallback []modelhealth.Ref, err error) {
 	tier := env["AGENT_ROLE_INTAKE"]
 	if tier == "" {
 		tier = env["AGENT_TIER_STRONG"]
 	}
 	// The tier may omit its model and effort.
-	ref, err := modelhealth.Parse(tier + strings.Repeat(":", max(0, 2-strings.Count(tier, ":"))))
-	if err != nil || ref.Agent != "claude" {
-		return "", "", errors.New("需求助手档位不是 claude（AGENT_ROLE_INTAKE）")
+	primary, err = modelhealth.Parse(tier + strings.Repeat(":", max(0, 2-strings.Count(tier, ":"))))
+	if err != nil || !intakeAgent(primary.Agent) {
+		return modelhealth.Ref{}, nil, errors.New("需求助手档位不是 claude 或 antigravity（AGENT_ROLE_INTAKE）")
 	}
-	return ref.Model, ref.Effort, nil
-}
-
-// intakeFallback reads AGENT_ROLE_INTAKE_FALLBACK, whose candidates must be claude.
-func intakeFallback(env map[string]string) ([]modelhealth.Ref, error) {
-	refs, err := config.ParseFallback(env[config.FallbackKey("AGENT_ROLE_INTAKE")])
+	fallback, err = config.ParseFallback(env[config.FallbackKey("AGENT_ROLE_INTAKE")])
 	if err != nil {
-		return nil, fmt.Errorf("需求助手兜底候选无效（AGENT_ROLE_INTAKE_FALLBACK）：%w", err)
+		return modelhealth.Ref{}, nil, fmt.Errorf("需求助手兜底候选无效（AGENT_ROLE_INTAKE_FALLBACK）：%w", err)
 	}
-	for _, ref := range refs {
-		if ref.Agent != "claude" {
-			return nil, errors.New("需求助手兜底候选不是 claude（AGENT_ROLE_INTAKE_FALLBACK）")
+	for _, ref := range fallback {
+		if !intakeAgent(ref.Agent) {
+			return modelhealth.Ref{}, nil, errors.New("需求助手兜底候选不是 claude 或 antigravity（AGENT_ROLE_INTAKE_FALLBACK）")
 		}
 	}
-	return refs, nil
+	return primary, fallback, nil
 }
+
+func intakeAgent(agent string) bool { return agent == "claude" || agent == "antigravity" }
 
 func intakeConcurrency(env map[string]string) (int, error) {
 	raw := env["AGENT_INTAKE_CONCURRENCY"]
@@ -212,11 +210,7 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 		r.sources[p.Prefix] = newQuerySource(r.ledgers[p.Prefix], p.Path, p.Remote, p.Repository.Env)
 		return cached, nil
 	}
-	model, effort, err := tierParts(p.Repository.Env)
-	if err != nil {
-		return intake.Project{}, err
-	}
-	fallback, err := intakeFallback(p.Repository.Env)
+	primary, fallback, err := tierParts(p.Repository.Env)
 	if err != nil {
 		return intake.Project{}, err
 	}
@@ -243,7 +237,7 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	project := intake.Project{Prefix: p.Prefix, Name: p.Name, Remote: p.Remote, Enabled: true, Repo: p.Path, Checkout: checkout, Ledger: store, Chat: chat}
 	// core/gate.sh always treats scripts/agent-gates/* as lane 2.
 	project.Lane2Globs, project.Lane3Globs = "scripts/agent-gates/* "+p.Repository.Env["AGENT_LANE2_GLOBS"], p.Repository.Env["AGENT_LANE3_GLOBS"]
-	runner := &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Model: model, Effort: effort, Fallback: fallback, StateRoot: logStateRoot(), Timeout: 5 * time.Minute, Tickets: intakeTickets(store, p.Path, r.readers)}
+	runner := &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Agent: primary.Agent, Model: primary.Model, Effort: primary.Effort, Fallback: fallback, StateRoot: logStateRoot(), Timeout: 5 * time.Minute, Tickets: intakeTickets(store, p.Path, r.readers)}
 	if piTier == "" {
 		runner.ModelURL, runner.ModelToken = r.relayEnv["ANTHROPIC_BASE_URL"], r.relayEnv["ANTHROPIC_AUTH_TOKEN"]
 	}
