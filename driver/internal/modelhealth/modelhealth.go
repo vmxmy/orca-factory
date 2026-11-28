@@ -16,7 +16,6 @@ const (
 	Unavailable     = "unavailable"
 	Unknown         = "unknown"
 	DefaultCooldown = 30 * time.Minute
-	ProbeTimeout    = 120 * time.Second
 )
 
 type Ref struct {

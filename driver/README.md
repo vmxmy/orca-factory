@@ -187,7 +187,7 @@ worker 运行期有两道看守，都由 `driver exec` 读取环境变量，缺�
 
 ### 守护进程被杀后的恢复
 
-已有 PR、没有 checkpoint 且账本缺少冻结合并交接时，执行器首次恢复就转处置 Agent，正常退出。账本事件以 `Agent处置: existing PR has no frozen handoff` 开头，证据包含 PR 号和分支 head，`attempt=2` 沿用原来第二次失败后转处置的值；无需等待 `executor failed twice`。由处置 Agent 核验保留的 PR 与分支，执行器不会启动 worker 或补跑 gate、reviewer。交接损坏或冲突仍报错等待，有 checkpoint 时缺交接仍重新取证。
+已有 PR、没有 checkpoint 且账本缺少冻结合并交接时，执行器首次恢复就转处置 Agent，正常退出。账本事件以 `Agent处置: existing PR has no frozen handoff` 开头，证据包含 PR 号和分支 head，`attempt=2` 沿用原来第二次失败后转处置的值；无需等待 `executor failed twice`。由处置 Agent 核验保留的 PR 与分支，执行器不会启动 worker 或补跑 gate、reviewer。交接损坏或冲突仍报错等待，有 checkpoint 时缺交接仍重新取证。调度器接管 legacy 票时同样处理：票有 PR 但账本缺少冻结交接时转处置 Agent，不直接进合并通道。
 
 终端句柄存在或派工显示 active 都不能证明执行器进程还活着：进程被外部 `kill` 后，终端和派工记录可能长时间保持原样。调度器因此读取 `driver exec`（处置 Agent 为 `driver resolve`）每 30 秒写入的心跳文件 `<状态根>/<仓库名>/<票号>/executor.heartbeat.json`（处置 Agent 为 `resolver.heartbeat.json`），字段与判定见 [CONTRACTS.md](CONTRACTS.md)。
 
@@ -342,7 +342,7 @@ flowchart LR
 - 接入前置检查（OF-52）在写任何东西之前，对每个确定性判断给出 `name`/`ok`/`detail`，`--dry-run` 和真实执行跑同一套：（a）本机工具，复用 `<factory_root>/bin/orca-factory doctor --json` 核对 orca 运行中、gh 已登录、git、jq 存在，并用 `resolveClaude` 核对 claude 可解析；（b）factory 自身，在 `factory_root` 跑 `scripts/agent-gates/install.sh --dry-run` 要求退出 0；（c）目标仓库，`gh api repos/<owner>/<repo>` 的 `permissions.push` 为 true、`git ls-remote origin main` 成功，且 `git -C <仓库> remote get-url origin` 规范化（去协议、凭据、`.git` 后缀，OF-56）后与发现阶段读到的 Orca canonicalKey 一致——不一致时该项失败，`detail` 给出两个规范化后的值与补法（重启 Orca 或在 Orca 中重新登记该仓库），从不回显原始 URL；（d）现场，接入 worktree 路径与 `feat/agent-graph` 分支（本地与远端）都不存在、接入锁空闲，向导续接时本机自己的 worktree 加本地分支例外；（e）账本，由已经成功算出的接入计划直接证明（计算该计划本身就已读过飞书项目表并算出不冲突的编号前缀，账本不可读会在这之前就失败，不会走到这里）；（f）服务环境（OF-131），从 `systemctl --user show -p Environment orca-factory-driver.service` 读出合并 drop-in 后的 `PATH` 与 `AGENT_ORCA_BIN`，要求 go、gh、git 能在 `PATH` 中找到；orca 与 driver 的 `runx.OrcaPath` 一致，服务设置了 `AGENT_ORCA_BIN` 时要求该路径可执行，未设置时才在 `PATH` 中查找。缺失时列出工具名或 `AGENT_ORCA_BIN` 路径并建议在 drop-in 中修正；systemctl 不存在或连不上 systemd user 实例时如实报告原因，并建议在该用户的登录会话中运行或确认 `XDG_RUNTIME_DIR` 与 `loginctl enable-linger`；（g）分支保护（OF-131），同时读 `gh api repos/<owner>/<repo>/branches/main`（经典分支保护的 `required_status_checks.contexts`）与 `gh api repos/<owner>/<repo>/rules/branches/main`（Ruleset 的 `required_status_checks` 规则），任一来源提供非空必需检查即通过（合并通道只在非空检查集全部成功后 squash）；都没有时失败，修复建议同时给出分支保护与 Ruleset 两种做法。两个端点只需读权限，不改仓库设置。`--dry-run` 的 JSON 带全部 7 项结果，任一失败即退出非 0；真实执行（向导接入会话与卡片「接入」按钮）任一失败都不写项目表行、不建 worktree、不启动 Agent。检查输出只给键名、布尔值与命令退出码，不回显凭据或环境变量值；唯一例外是服务环境项会给出 `AGENT_ORCA_BIN` 指向的工具路径。
 - 锁文件 `<state root>/onboard/<远端，/ 换成 _>.lock`（state root 默认 `~/.local/state/orca-factory`）跨进程互斥：命令行与网关按钮对同一仓库同时只有一个接入，其余拒绝“已有进行中的接入”。
 - worktree 在 `<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`，分支 `feat/agent-graph` 基于 `origin/main`；该路径由 `onboardWorktree` 单一来源给出，接入、启用清理与续接判定读同一公式。现场前置检查已确认该目录与分支都不存在（向导续接阶段例外：本机自己的 worktree 加本地分支算「ours」，可续接）；启用成功后 driver 会清理这次接入自己创建的现场，见下文“自动启用”。向导的 agent 阶段结束但 gh 没有读到打开或已合并的 PR 时，worktree 保留、以退出码 1 结束并提示重跑续接，不自动重开 agent。
-- 接入 Agent 的参数与环境只由 `onboardAgentArgs`、`onboardAgentEnv` 构造，两种模式共用：角色 `scripts/agent-gates/roles/onboard.md`（`factory_root` 中的安装副本），档位取 factory 的 `AGENT_ROLE_INTAKE`，未设时取 `AGENT_TIER_STRONG`，必须是 claude。工具限 `Bash,Read,Edit,Write,Grep,Glob`，`--restricted` 把文件工具限在 worktree 内，`--add-dir <factory_root>` 把 factory 根目录也加进文件工具的范围（读写都放开，用于读 factory 的手册），`--settings` 拒绝读凭据目录、`env`/`printenv`、`git stash`、force push、push main 与 `gh pr merge`。进程环境只有 `HOME`、`PATH`，以及存在时的 `XDG_RUNTIME_DIR`、`DBUS_SESSION_BUS_ADDRESS`（gh 从系统 keyring 读已有登录用）；不传飞书应用凭据或其他 token。
+- 接入 Agent 的参数与环境只由 `onboardAgentArgs`、`onboardAgentEnv` 构造，两种模式共用：角色 `scripts/agent-gates/roles/onboard.md`（`factory_root` 中的安装副本），档位取 factory 的 `AGENT_ROLE_INTAKE`，未设时取 `AGENT_TIER_STRONG`；主选不是 claude 时取 `AGENT_ROLE_INTAKE_FALLBACK` 中第一个 claude 候选，没有则接入失败。工具限 `Bash,Read,Edit,Write,Grep,Glob`，`--restricted` 把文件工具限在 worktree 内，`--add-dir <factory_root>` 把 factory 根目录也加进文件工具的范围（读写都放开，用于读 factory 的手册），`--settings` 拒绝读凭据目录、`env`/`printenv`、`git stash`、force push、push main 与 `gh pr merge`。进程环境只有 `HOME`、`PATH`，以及存在时的 `XDG_RUNTIME_DIR`、`DBUS_SESSION_BUS_ADDRESS`（gh 从系统 keyring 读已有登录用）；不传飞书应用凭据或其他 token。
 - 向导的接入会话是交互式 Claude Code（OF-201）。启动消息含「交互模式」：Agent 先只读调研，再用 AskUserQuestion 请人确认推导出的命令、lane glob 与四个待确认键。工具另加 `AskUserQuestion`，权限模式为 `default`（`dontAsk` 会拒绝 AskUserQuestion）；环境另加 `TERM`、`LANG`，以及存在时的 `LC_ALL`、`COLORTERM`。claude 是 driver 的前台子进程，继承终端，不设超时，driver 持接入锁等它退出。会话期间 driver 不因 SIGINT、SIGQUIT、SIGHUP 退出（终端已把它们送给 claude）；SIGTERM 转发给 claude，10 秒后仍未退出就 kill；claude 死于信号时 driver 执行 `stty sane`。driver 收到过 SIGTERM 或 SIGHUP 时，claude 退出后向导不回读 PR，直接以退出码 1 结束并提示重跑续接。stdin 不是终端时，向导拒绝进入接入会话，以退出码 1 结束并提示无人值守接入用飞书卡片。全新 worktree 首次进入会弹出信任目录对话框，默认选中「No, exit」：按 ↓ 选 Yes 再回车。开出 PR 后输入 `/exit` 回到向导；向导只认 gh 回读的 PR。
 - 卡片路径仍是无人值守的 `claude -p --output-format json`，权限模式 `dontAsk`，最长 2h。Agent 最终回复须含 `https://github.com/<AGENT_GH_REPO>/pull/<号>`；没有则判失败，错误信息附 Agent 最终说明。项目表行在启动 Agent 之前由 driver 经 factory 的飞书账本写入（名称=检出目录名、仓库远端、编号前缀、启用=false），Agent 不写飞书。编号前缀取目录名各词首字母（单词取前两字母），与项目表已有前缀冲突时加数字后缀。同远端同前缀的行已存在时视为已写入；远端或前缀被别的行占用时报错。
 - 接入 PR 合并后，下一次发现把该仓库判为「项目未启用」（待启用），可在项目表手动勾选「启用」，也可在卡片或下方“已接入”完成回复上点“启用”按钮（OF-54，见“自动启用”），或重跑向导进入启用阶段（与 `enable --repo` 同一套校验，OF-195）。发现读的是本机检出：检出还停在合并前时，该仓库仍显示「可接入」，但向导按 origin/main 与 PR 的事实路由到启用阶段，不受发现原因影响。
@@ -710,11 +710,11 @@ AGENT_TIER_ESCALATE = "0"
 
 worker 首轮使用 `default`。无论是否升档，`AGENT_TIER_CHAIN` 都须合法，空值使用 `default strong`。启用 `AGENT_TIER_ESCALATE=1` 时，链必须含 `default`，每个档位都须配置合法的模型引用。候选包括 `default` 和最多 3 次 correction 能到达的后续档位。窗口外格式错误的档位单独报错，合法的档位省略。关闭升档时只有 `default` 是候选。
 
-每个已接管仓库都有 intake 行。doctor 先校验 Claude 档位，取 `AGENT_ROLE_INTAKE`，为空时取 `AGENT_TIER_STRONG`。两者都为空时，即使配置了 Pi，intake 仍显示 `unknown/not_configured`。校验通过后再看 `AGENT_INTAKE_PI`，依次取仓库、进程环境、机器 `driver.env` 的值。启用 Pi 时，intake 行显示 `pi:<provider>/<model>:<thinking>` 和 `unknown/unsupported_agent`。这类候选仍可重试，计入 `unknown` 汇总。
+每个已接管仓库都有 intake 行。doctor 先校验 intake 档位，取 `AGENT_ROLE_INTAKE`，为空时取 `AGENT_TIER_STRONG`；主选与 `AGENT_ROLE_INTAKE_FALLBACK` 的候选只能是 `claude` 或 `antigravity`，其他 agent 显示 `unknown/config_invalid`。两者都为空时，即使配置了 Pi，intake 仍显示 `unknown/not_configured`。主选是 `antigravity` 时，intake 行用该候选和 `driver.toml` 中 `[agents.antigravity]` 的 `probe_args` 探测，只传 `HOME` 和 `PATH`，状态取探测结果；未配置该 agent 时显示 `unknown/unsupported_agent`。校验通过后再看 `AGENT_INTAKE_PI`，依次取仓库、进程环境、机器 `driver.env` 的值。启用 Pi 时，intake 行显示 `pi:<provider>/<model>:<thinking>` 和 `unknown/unsupported_agent`。这类候选仍可重试，计入 `unknown` 汇总。
 
 Claude 的 `reviewer` 和 `reviewer_small` 探测使用执行器启动 reviewer 时的端点。配置有效的 `AGENT_MODEL_PROXY_URL` 时，两类 reviewer 使用该代理。intake 与飞书网关一致：总是解析机器 `driver.env`（解析失败时 intake 行为 `unknown/config_invalid`），`AGENT_INTAKE_CLAUDE`、`AGENT_INTAKE_PI` 的非空进程环境值再覆盖文件值并去空白；`AGENT_INTAKE_CLAUDE` 须为绝对路径（为空时取 PATH 上的 `claude`），否则 intake 行显示 `unknown/config_invalid`；探测默认只传 `HOME` 和 `PATH`。配置模型中转站地址与凭证后，Claude intake 探针另带 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`。配置 `second_reviewer` 时，doctor 另列 `cross_reviewer` 行探测交叉审查的主 reviewer。两行都按交叉审查的规则选择凭证。命令须与生成的 Claude 命令逐字相同，模型名和 effort 都只能含允许的 shell 字面字符。使用默认模型的结构化角色（如 `claude::high`）也带中转站地址与凭证。旧式 `*_CMD` 命令必须写明模型名才带。旧式 reviewer 命令（`*_CMD`）是任意 shell：只含空白时按未配置处理；与结构化值生成的命令逐字相同、且模型名等不含 shell 引号或变量时按该值探测；其余不解析也不探测，该行报 `unknown/legacy_command`；PATH 上的 agent 与其绝对路径只探测一次。非隔离探针从继承的环境中剔除 `AGENT_MODEL_PROXY_TOKEN`。未配置代理的 reviewer、worker 和 resolver 探针仍可继承已有的 `ANTHROPIC_BASE_URL`。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
 
-doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环境隔离）去重。在首个需要该组合的项目中发送一次 `Reply with exactly: ok`，因此同一模型的继承端点、reviewer 代理和 intake 各探测一次。冷却期内也照常探测，各角色显示本轮对应端点的结果；本轮未能确认（`unknown`）而该模型仍在冷却时，显示登记的不可用状态。各行按本轮开始时的登记判定，之后才写入登记，`watch --dry-run` 与实际巡检判定一致。整批探测并发执行，共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low`、`--sandbox read-only` 和 `--ephemeral`，不留会话文件。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
+doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环境隔离）去重。在首个需要该组合的项目中发送一次 `Reply with exactly: ok`，因此同一模型的继承端点、reviewer 代理和 intake 各探测一次。冷却期内也照常探测，各角色显示本轮对应端点的结果；本轮未能确认（`unknown`）而该模型仍在冷却时，显示登记的不可用状态。各行按本轮开始时的登记判定，之后才写入登记，`watch --dry-run` 与实际巡检判定一致。整批探测并发执行，共用本批 agent 中最大的 `probe_timeout`（默认 120 秒，上限 240 秒），并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low`、`--sandbox read-only` 和 `--ephemeral`，不留会话文件。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
 
 成功退出且回复恰为 `ok` 时记为 `ok`。以 `You've hit your … limit` 开头、在 `limit` 后结束或接 `·` 的 Claude 额度耗尽提示行（探测超时时须带 `· resets`；Codex 短句先于超时判定）和 Codex 录制样本中的 ChatGPT 账号不支持短句记为 `unavailable`。Claude 的重置提示按指定时区与观察年份解析，十二月收到的一月重置提示使用下一年。缺少有效的未来重置时间时冷却 30 分钟。超时、其他命令失败或无法识别的回复记为 `unknown`。
 
@@ -725,7 +725,7 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环�
 
 ### 模型兜底（OF-593）
 
-每个角色键与档键都可配 `<键名>_FALLBACK`，值为空格分隔的有序 `agent:model:effort` 列表，仓库 env 与方案文件都可以写。适用的键：`AGENT_TIER_<档名>`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_RESOLVER_TOP`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`。需求助手的候选必须是 claude；审查角色的候选只支持 `codex` 与 `claude`，且只在角色由结构化键配置时生效，`_CMD` 命令不参与兜底。
+每个角色键与档键都可配 `<键名>_FALLBACK`，值为空格分隔的有序 `agent:model:effort` 列表，仓库 env 与方案文件都可以写。适用的键：`AGENT_TIER_<档名>`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_RESOLVER_TOP`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`。需求助手的候选必须是 claude 或 antigravity，会话固定规则见「需求助手会话固定」；审查角色的候选只支持 `codex` 与 `claude`，且只在角色由结构化键配置时生效，`_CMD` 命令不参与兜底。
 
 启动点在派工前读一次模型可用性登记：主选可用、缺记录或冷却已到期时用主选；主选仍在冷却时用第一个未冷却的候选；候选全部冷却时仍用主选，派工照常进行，与没有配置兜底时相同；driver 不新增等待模型恢复的状态，也不因此挂起派工；全部不可用时的搁置与自动解除见下文「运行中的模型错误」。没有配置兜底时不读登记，行为与原来相同。各启动点的记录位置：
 
@@ -735,7 +735,7 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环�
 | 处置 Agent、终审 | `scheduler.ResolveTicket` | 处置记录 `resolver-state` 的 agent/model/effort 与 resolver 日志 |
 | 主审查、小票审查 | `executor.Commands.Review` | executor 日志 `reviewer model falls back` |
 | 交叉复审 | `scheduler.startCrossReview` | scheduler 日志 `cross review model falls back` |
-| 需求助手 | `intake.Runner.Turn`（每轮） | 网关 stderr `intake model falls back: configured=… selected=…` |
+| 需求助手 | `intake.Runner.Turn`（每轮；续轮只在会话所在 agent 的候选中选择，见「需求助手会话固定」） | 网关 stderr `intake model falls back: configured=… selected=…` |
 | 接入 Agent | `onboardAgentArgs`（启动接入 Agent 时） | stderr `onboard model falls back: configured=… selected=…` |
 
 每轮写 correction 前，执行器先查模型可用性登记。环境变量 `AGENT_CORRECTION` 指定主选（默认 `claude:claude-opus-5-5:high`），`AGENT_CORRECTION_FALLBACK` 指定兜底（默认 `codex:gpt-6.2-astra:high`）。主选在冷却时用兜底。登记读取失败或两者都在冷却时，执行器跳过会话，把失败原因和本轮已有的失败摘要写进子任务简报。
@@ -787,7 +787,7 @@ reviewer 经本机模型代理访问模型时，在机器 `~/.config/orca-factor
 
 两项都配置时，`config.ModelRelay` 返回 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`，只用于以下隔离入口：
 
-- 飞书网关创建的 Claude intake 子进程。
+- 飞书网关创建的 Claude intake 子进程。antigravity intake 子进程不带中转站凭证。
 - 交叉审查的首跑和回退重跑都按当次命令决定。命令须与生成的 Claude 命令逐字相同，且模型名与 effort 只能含 ASCII 字母、数字或 `._/@+-`。
 - doctor 的 Claude `intake` 探针。其 `second_reviewer` 和 `cross_reviewer` 探针与调度器共用上述命令判定。使用默认模型的 Claude 结构化审查角色（如 `claude::high`）也带中转站地址与凭证。旧式 `*_CMD` 命令必须写明模型名才带；即使与 `claude::high` 生成的命令逐字相同，也不带（`TestModelRelayCrossReview`）。
 
@@ -803,6 +803,8 @@ intake 的拒读 settings 增加 `Read(/proc/**)`。测试只断言该字符串�
 调度器与飞书需求网关的项目发现（OF-42、OF-43）用它运行 `<factory_root>/bin/orca-factory check <仓库路径>`
 核对候选仓库的流水线；缺省时发现结果把全部仓库判为不接管，调度器不领任何票。
 `repositories` 已删除（OF-43）。旧文件中残留的该键被忽略，不影响加载；部署后从 `driver.toml` 删去即可。
+
+`[agents.<名称>]` 节登记模型角色可用的 agent CLI（`binary`、`probe_args`、`review_args`、`correction_args`、`relay`）。`probe_timeout` 设定该 agent 单次模型探测的期限，取 TOML 时长字符串，须大于 0 且不超过 `"240s"`，不写时为 120 秒；取值无效时 driver.toml 加载失败。
 
 ```toml
 max_in_flight = 20
@@ -937,6 +939,50 @@ Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stde
   `ANTHROPIC_AUTH_TOKEN`。模型与 effort 通过 `--model`、`--effort` 传入。
   飞书、GitHub 凭据不进入 Agent 进程。
 - `--restricted` 不加载用户技能目录，grilling 技能因此不可用；角色说明自带追问规则。
+
+### 需求助手的 antigravity 候选（OF-686）
+
+`AGENT_ROLE_INTAKE` 与 `AGENT_ROLE_INTAKE_FALLBACK` 的候选可以是 `claude` 或
+`antigravity`，不支持 `codex`。antigravity 回合运行 `driver.toml` 中
+`[agents.antigravity]` 的 `binary`（PATH 上查找），参数取两个模板：
+
+```toml
+[agents.antigravity]
+binary = "agy"
+intake_args = ["--print={prompt}", "--model", "{model}", "--effort", "{effort}", "--output-format", "json", "--mode", "plan", "--settings", "{\"allowNonWorkspaceAccess\":false,\"permissions\":{\"deny\":[\"command(*)\",\"mcp(*)\",\"write_file(*)\"]}}"]
+intake_resume_args = ["--print={prompt}", "--conversation", "{conversation}", "--model", "{model}", "--effort", "{effort}", "--output-format", "json", "--mode", "plan", "--settings", "{\"allowNonWorkspaceAccess\":false,\"permissions\":{\"deny\":[\"command(*)\",\"mcp(*)\",\"write_file(*)\"]}}"]
+```
+
+- `intake_args` 开始新会话，`intake_resume_args` 续接 `{conversation}` 指定的 agy 会话。
+  两项缺一时 antigravity 回合失败。driver 不追加任何 agy 参数，模板须自带
+  `--output-format json`、`--mode plan` 与 `--settings` 拒绝规则。消息经 `{prompt}` 传入，
+  须用 `--print=` 连写形式，以免以 `-` 开头的消息被当成参数。模型和 effort 为空时去掉对应参数。
+- agy 没有系统提示参数：新会话的首条消息前附上检出中的 `scripts/agent-gates/roles/intake-chat.md`
+  全文。提示词内容不变。
+- 凭证保护由 agy 强制执行（agy 1.5.18 实测，2026-11-28）：`read_file` 读
+  `~/.gemini/antigravity-cli/antigravity-oauth-token` 报 `Matches hardcoded system protection boundary rule`；
+  上面的拒绝规则让 `wc -c`、`ls` 等命令报 `Matches user-configured deny rule`；`allowNonWorkspaceAccess=false`
+  下读工作区外的文件需要批准，`--print` 无法批准，按拒绝处理。工具被拒时 agy 的 `response` 常为空，该轮按失败处理。
+- 沙箱与 Claude 回合相同，只是 HOME 下的内容不同：`~/.gemini/antigravity-cli` 换成
+  `<state root>/intake-antigravity`（0700），其中只绑定真实目录里的 `antigravity-oauth-token`。
+  agy 的 `brain/`、`conversations/`、历史与设置因此只含需求助手自己的会话，其他 agy 会话、`~/.gemini` 其他文件、
+  `~/.claude` 与 `~/.codex` 都不在沙箱里。环境只含 `HOME` 与 `PATH`。
+  超时、取消与进程组处理与 Claude 回合共用。
+- 回复取 agy JSON 的 `response`（去掉首尾空白），`status` 须为 `SUCCESS`，`conversation_id` 须为 UUID；
+  录制样本见 `testdata/recorded/agy-print-json-result.json`。
+
+#### 需求助手会话固定
+
+会话固定在首轮实际运行的 agent 上。首轮可以在 claude 与 antigravity 候选之间回退；
+antigravity 首轮成功后，网关写 `~/.local/state/orca-factory/intake-agents/<会话ID>.json`
+（随 `AGENT_DRIVER_STATE_ROOT` 改根目录），内容为
+`{"agent":"antigravity","conversation":"<agy 会话ID>"}`。claude 首轮成功时删除同名记录。
+没有记录的会话（含本功能上线前的全部会话）属于 claude，行为与原来相同。
+
+续轮只在会话所在 agent 的候选中选择与回退，不换到另一个 agent。antigravity 会话的候选
+全部冷却时，该轮直接失败，不启动 claude；claude 会话的候选全部冷却时仍用第一个候选，
+与原来相同。配置中已没有会话所在 agent 的候选时，该轮失败。滚动摘要换新会话ID 后重新选择 agent。
+接入 Agent 只运行 claude：主选不是 claude 时取兜底中第一个 claude 候选，没有 claude 候选时接入失败。
 
 每轮调用 Agent 前，网关把该项目票据主账本的在途票（不含已关闭的
 Done/Canceled/Duplicate）写入检出根目录 `.intake/tickets.md`：每行票号、状态、标题、

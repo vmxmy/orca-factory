@@ -177,14 +177,20 @@ func (o onboarder) plan(ctx context.Context, repo string) (onboardPlan, error) {
 	if err != nil {
 		return onboardPlan{}, fmt.Errorf("factory 项目配置不可读：%w", err)
 	}
-	model, effort, err := tierParts(factory.Env)
+	primary, fallback, err := tierParts(factory.Env)
 	if err != nil {
 		return onboardPlan{}, err
 	}
-	fallback, err := intakeFallback(factory.Env)
-	if err != nil {
-		return onboardPlan{}, err
+	// The onboarding agent runs claude only.
+	if primary.Agent != "claude" {
+		i := slices.IndexFunc(fallback, func(ref modelhealth.Ref) bool { return ref.Agent == "claude" })
+		if i < 0 {
+			return onboardPlan{}, errors.New("接入 Agent 需要 claude 候选（AGENT_ROLE_INTAKE 或其兜底）")
+		}
+		primary, fallback = fallback[i], fallback[i+1:]
 	}
+	fallback = slices.DeleteFunc(fallback, func(ref modelhealth.Ref) bool { return ref.Agent != "claude" })
+	model, effort := primary.Model, primary.Effort
 	env := map[string]string{"AGENT_FEISHU_PROJECT": target.Remote, "AGENT_GH_REPO": m[1]}
 	for _, key := range onboardDefaultKeys {
 		if v := factory.Env[key]; v != "" {

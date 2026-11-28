@@ -1110,7 +1110,7 @@ func TestDoctorModelsConcurrent(t *testing.T) {
 		}
 		mu.Lock()
 		deadline, bounded := ctx.Deadline()
-		if !bounded || time.Until(deadline) > modelhealth.ProbeTimeout {
+		if !bounded || time.Until(deadline) > agentcli.DefaultProbeTimeout {
 			t.Error("probe batch missing its time limit")
 		}
 		if entered == 0 {
@@ -1951,5 +1951,115 @@ func TestConfiguredEffortProbeKey(t *testing.T) {
 	}
 	if calls["high"] != 1 || calls["low"] != 1 || states["worker_default"] != modelhealth.Unknown || states["reviewer"] != modelhealth.OK {
 		t.Fatalf("calls=%v role results=%v", calls, states)
+	}
+}
+
+func TestDoctorProbeDeadlineFollowsAgent(t *testing.T) {
+	agentcli.Configure(map[string]agentcli.Profile{"slow-probe": {ProbeTimeout: agentcli.ProbeTimeout(240 * time.Second)}})
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	for _, tc := range []struct {
+		name, reviewer string
+		want           time.Duration
+	}{
+		{"claude only", "claude:b:low", 120 * time.Second},
+		{"slow agent", "slow-probe:b:low", 240 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var remaining []time.Duration
+			p := modelFixtureProbe(time.Now(), t.TempDir())
+			p.modelProbe = func(ctx context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
+				deadline, _ := ctx.Deadline()
+				mu.Lock()
+				remaining = append(remaining, time.Until(deadline))
+				mu.Unlock()
+				return modelhealth.Classify(ref, "ok", nil, time.Now())
+			}
+			repo := config.Repository{Env: map[string]string{
+				"AGENT_TIER_DEFAULT": "claude:a:high", "AGENT_ROLE_REVIEWER": tc.reviewer, "AGENT_ROLE_RESOLVER": "claude:a:high", "AGENT_ROLE_INTAKE": "claude:a:high",
+			}}
+			p.checkModels(context.Background(), []projects.Project{{Name: "first", Path: "/first", Repository: repo}}, nil)
+			if len(remaining) == 0 {
+				t.Fatal("no probe ran")
+			}
+			for _, got := range remaining {
+				if got > tc.want || got < tc.want-10*time.Second {
+					t.Errorf("probe deadline in %v, want about %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestDoctorIntakeAntigravityProbe(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_MODEL_PROXY_URL", "")
+	t.Setenv("AGENT_INTAKE_PI", "")
+	t.Setenv("AGENT_INTAKE_CLAUDE", "/opt/test/claude")
+	p, err := newDoctorProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.stateRoot = t.TempDir()
+	// newDoctorProbe loads driver.toml, which replaces the agent profiles.
+	agentcli.Configure(map[string]agentcli.Profile{"antigravity": {Binary: "agy", ProbeArgs: []string{"--print={prompt}", "--model", "{model}"}}})
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	var mu sync.Mutex
+	var intake []string
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, endpoint modelhealth.Endpoint) modelhealth.Status {
+		state := modelhealth.OK
+		if ref.Agent == "antigravity" {
+			mu.Lock()
+			intake = append(intake, fmt.Sprintf("%s|%s|%t", ref, endpoint.Binary, endpoint.Isolated))
+			mu.Unlock()
+			state = modelhealth.Unavailable
+		}
+		return modelhealth.Status{Ref: ref, State: state, Reason: "usage_limit", Until: p.now.Add(time.Hour), CheckedAt: p.now}
+	}
+	project := projects.Project{Repository: config.Repository{Env: map[string]string{
+		"AGENT_ROLE_INTAKE": "antigravity:gemini-4-neon-high:high", "AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER": "codex:m:high",
+	}}}
+	got := p.checkModels(context.Background(), []projects.Project{project}, nil)
+	rows, _ := got.Details.([]doctorModelStatus)
+	if !slices.Equal(intake, []string{"antigravity:gemini-4-neon-high:high||true"}) {
+		t.Fatalf("intake probes = %v", intake)
+	}
+	assertDoctorModel(t, rows, "", "intake", "antigravity:gemini-4-neon-high:high", modelhealth.Unavailable, "usage_limit")
+}
+
+// AGENT_INTAKE_CLAUDE runs claude only: an antigravity intake fallback probes
+// with agy, and a claude fallback under an antigravity primary keeps it.
+func TestDoctorIntakeFallbackEndpointFollowsAgent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_MODEL_PROXY_URL", "")
+	t.Setenv("AGENT_INTAKE_PI", "")
+	t.Setenv("AGENT_INTAKE_CLAUDE", "/opt/test/claude")
+	p, err := newDoctorProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.stateRoot = t.TempDir()
+	agentcli.Configure(map[string]agentcli.Profile{"antigravity": {Binary: "agy", ProbeArgs: []string{"--print={prompt}", "--model", "{model}"}}})
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	for _, tc := range []struct{ primary, fallback string }{
+		{"claude:claude-opus-5-5:high", "antigravity:gemini-4-neon-high:high"},
+		{"antigravity:gemini-4-neon-high:high", "claude:claude-opus-5-5:high"},
+	} {
+		var mu sync.Mutex
+		binaries := map[string]string{}
+		p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, endpoint modelhealth.Endpoint) modelhealth.Status {
+			mu.Lock()
+			binaries[ref.String()] = endpoint.Binary
+			mu.Unlock()
+			return modelhealth.Status{Ref: ref, State: modelhealth.OK, Reason: "probe_ok", CheckedAt: p.now}
+		}
+		project := projects.Project{Repository: config.Repository{Env: map[string]string{
+			"AGENT_ROLE_INTAKE": tc.primary, "AGENT_ROLE_INTAKE_FALLBACK": tc.fallback, "AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER": "codex:m:high",
+		}}}
+		p.checkModels(context.Background(), []projects.Project{project}, nil)
+		agy, claude := binaries["antigravity:gemini-4-neon-high:high"], binaries["claude:claude-opus-5-5:high"]
+		if agy != "" || claude != "/opt/test/claude" {
+			t.Fatalf("primary %s: agy probe binary %q, claude probe binary %q", tc.primary, agy, claude)
+		}
 	}
 }

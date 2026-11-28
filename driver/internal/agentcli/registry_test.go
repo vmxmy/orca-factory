@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
@@ -465,5 +466,46 @@ func TestInlineAgentPrompt(t *testing.T) {
 	cmd.Stdin = strings.NewReader(input)
 	if out, err := cmd.CombinedOutput(); err != nil || string(out) != "--print="+input+"/"+input {
 		t.Errorf("reviewer argv: %q, %v", out, err)
+	}
+}
+
+func TestProfileProbeTimeout(t *testing.T) {
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "orca-factory")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, line string
+		want       time.Duration
+		fails      bool
+	}{
+		{"configured", "probe_timeout = \"240s\"\n", 240 * time.Second, false},
+		{"default", "", 120 * time.Second, false},
+		{"zero", "probe_timeout = \"0s\"\n", 0, true},
+		{"malformed", "probe_timeout = \"abc\"\n", 0, true},
+		{"above limit", "probe_timeout = \"300s\"\n", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agentcli.Configure(nil)
+			if err := os.WriteFile(filepath.Join(dir, "driver.toml"), []byte("[agents.slow]\nbinary = \"slow\"\n"+tc.line), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := config.Load(home)
+			if tc.fails {
+				if err == nil || !strings.Contains(err.Error(), "agents.slow") {
+					t.Fatalf("Load(%q) error = %v; want it to name agents.slow", tc.line, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, ok := agentcli.Lookup("slow")
+			if !ok || p.ProbeLimit() != tc.want {
+				t.Fatalf("ProbeLimit() = %v, %t; want %v", p.ProbeLimit(), ok, tc.want)
+			}
+		})
 	}
 }

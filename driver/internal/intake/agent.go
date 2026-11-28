@@ -1,6 +1,7 @@
 package intake
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -46,9 +47,12 @@ const agentSettings = `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.con
 // claude path, and the zero value selects it exactly as before.
 type Runner struct {
 	Claude, Repo, Checkout, Model, Effort string
-	ModelURL, ModelToken                  string
-	// Fallback lists the claude models each turn tries in order when the
-	// model registry under StateRoot marks Model unavailable.
+	// Agent runs Model: claude when empty, or antigravity.
+	Agent                string
+	ModelURL, ModelToken string
+	// Fallback lists the claude or antigravity models each turn tries in order
+	// when the model registry under StateRoot marks Model unavailable. A
+	// session keeps the agent its first turn ran on.
 	Fallback  []modelhealth.Ref
 	StateRoot string
 	// Bwrap overrides the sandbox executable, found on PATH when empty.
@@ -78,12 +82,12 @@ type Runner struct {
 	piStop        chan struct{}
 }
 
-// turnModel is Model and Effort unless the model registry marks Model
-// unavailable; then it is the first available Fallback candidate. The switch
+// turnModel is the first candidate unless the model registry marks it
+// unavailable; then it is the first available later candidate. The switch
 // goes to the gateway's stderr log, like the other intake turn records.
-func (r *Runner) turnModel() modelhealth.Ref {
-	primary := modelhealth.Ref{Agent: "claude", Model: r.Model, Effort: r.Effort}
-	selected, err := config.SelectModel(r.StateRoot, primary, r.Fallback, time.Now())
+func (r *Runner) turnModel(candidates []modelhealth.Ref) modelhealth.Ref {
+	primary := candidates[0]
+	selected, err := config.SelectModel(r.StateRoot, primary, candidates[1:], time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "intake model fallback unavailable; keeping configured model: %v\n", err)
 	}
@@ -97,27 +101,37 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 	if r.piEnabled() {
 		return r.piTurn(ctx, t)
 	}
-	flag := "--resume"
-	if !t.Resume {
-		flag = "--session-id"
-		if err := r.update(ctx); err != nil {
+	candidates := append([]modelhealth.Ref{{Agent: cmp.Or(r.Agent, "claude"), Model: r.Model, Effort: r.Effort}}, r.Fallback...)
+	var session sessionAgent
+	if t.Resume {
+		var err error
+		if session, err = r.readSessionAgent(t.Session); err != nil {
 			return "", err
 		}
+		candidates = slices.DeleteFunc(candidates, func(ref modelhealth.Ref) bool { return ref.Agent != session.Agent })
+		if len(candidates) == 0 {
+			return "", fmt.Errorf("intake session agent %s has no configured candidate", session.Agent)
+		}
+	} else if err := r.update(ctx); err != nil {
+		return "", err
 	}
 	r.writeTicketContext(ctx)
-	model := r.turnModel()
+	model := r.turnModel(candidates)
+	if session.Agent == antigravity && !r.available(model) {
+		return "", fmt.Errorf("intake session agent %s unavailable", session.Agent)
+	}
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
-	b, err := r.claude(ctx, flag, t, model)
+	b, err := r.run(ctx, t, model, session.Conversation)
 	if err != nil {
-		candidates := append([]modelhealth.Ref{{Agent: "claude", Model: r.Model, Effort: r.Effort}}, r.Fallback...)
 		next, retry, modelErr := config.RetryAfterModelStatus(r.StateRoot, turnStatus(model, b, err, time.Now()), candidates, time.Now())
 		if modelErr != nil {
 			fmt.Fprintf(os.Stderr, "intake model error not recorded: %v\n", modelErr)
 		}
 		if retry {
 			fmt.Fprintf(os.Stderr, "intake model unavailable; retrying: unavailable=%s selected=%s\n", model, next)
-			if b, err = r.claude(ctx, flag, t, next); err != nil {
+			model = next
+			if b, err = r.run(ctx, t, next, session.Conversation); err != nil {
 				if _, _, modelErr = config.RetryAfterModelStatus(r.StateRoot, turnStatus(next, b, err, time.Now()), nil, time.Now()); modelErr != nil {
 					fmt.Fprintf(os.Stderr, "intake model error not recorded: %v\n", modelErr)
 				}
@@ -127,11 +141,39 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("intake agent failed: %w", errors.Join(err, ctx.Err()))
 	}
+	if model.Agent == antigravity {
+		return r.antigravityAnswer(t.Session, b)
+	}
 	result, ok := printResult(b)
 	if !ok || result.Subtype != "success" || result.IsError || strings.TrimSpace(result.Result) == "" {
 		return "", errors.New("intake agent returned no result")
 	}
+	if !t.Resume {
+		if err := r.recordSessionAgent(t.Session, sessionAgent{Agent: "claude"}); err != nil {
+			return "", fmt.Errorf("intake session agent not recorded: %w", err)
+		}
+	}
 	return result.Result, nil
+}
+
+// run sends one turn to model's agent; conversation is the antigravity
+// conversation a resumed turn continues.
+func (r *Runner) run(ctx context.Context, t Turn, model modelhealth.Ref, conversation string) ([]byte, error) {
+	if model.Agent == antigravity {
+		return r.antigravity(ctx, t, model, conversation)
+	}
+	flag := "--resume"
+	if !t.Resume {
+		flag = "--session-id"
+	}
+	return r.claude(ctx, flag, t, model)
+}
+
+// available reports whether the model registry leaves ref eligible; an
+// unreadable registry keeps it, as SelectModel does.
+func (r *Runner) available(ref modelhealth.Ref) bool {
+	registry, err := modelhealth.Open(r.StateRoot)
+	return err != nil || registry.Status(ref, time.Now()).State != modelhealth.Unavailable
 }
 
 type claudePrintResult struct {
@@ -181,42 +223,48 @@ func (r *Runner) claude(ctx context.Context, flag string, t Turn, model modelhea
 		"--tools", "Read,Grep,Glob,Skill", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--settings", agentSettings)
 	// The prompt travels on stdin: --tools is variadic, and an untrusted message
 	// starting with "-" must never be parsed as a flag.
-	sandbox, err := r.sandboxArgs()
+	home := os.Getenv("HOME")
+	config, state := filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json")
+	sandbox, err := r.sandboxArgs(r.Claude, config, config, state, state)
 	if err != nil {
 		return nil, err
 	}
-	bwrap := r.Bwrap
-	if bwrap == "" {
-		bwrap = "bwrap"
-	}
-	cmd := exec.CommandContext(ctx, bwrap, append(sandbox, args...)...)
-	cmd.Dir = r.Checkout
-	cmd.Env = []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+	env := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
 	if r.ModelURL != "" && r.ModelToken != "" {
-		cmd.Env = append(cmd.Env, "ANTHROPIC_BASE_URL="+r.ModelURL, "ANTHROPIC_AUTH_TOKEN="+r.ModelToken)
+		env = append(env, "ANTHROPIC_BASE_URL="+r.ModelURL, "ANTHROPIC_AUTH_TOKEN="+r.ModelToken)
 	}
-	cmd.Stdin = strings.NewReader(t.Prompt)
+	return r.sandboxed(ctx, append(sandbox, args...), env, t.Prompt)
+}
+
+// sandboxed runs bwrap with args in its own process group, killed as a whole
+// when ctx ends.
+func (r *Runner) sandboxed(ctx context.Context, args, env []string, stdin string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, cmp.Or(r.Bwrap, "bwrap"), args...)
+	cmd.Dir = r.Checkout
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(stdin)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second
 	return cmd.Output()
 }
 
-// sandboxArgs confines claude with the operating system, under --restricted:
-// the agent handles untrusted group messages on a machine holding production
-// credentials. A missing bwrap fails the turn instead of running unconfined.
-// Only system directories are exposed, so a repository is hidden wherever it
-// lives. Home holds nothing but claude's own directory, because a token refresh
+// sandboxArgs confines the agent binary with the operating system, under its
+// own tool restrictions: the agent handles untrusted group messages on a
+// machine holding production credentials. A missing bwrap fails the turn
+// instead of running unconfined. Only system directories are exposed, so a
+// repository is hidden wherever it lives. Home holds nothing but the agent's
+// own state, binds given as source and target pairs, because a token refresh
 // must be able to replace its credentials file. /etc/resolv.conf may link into
 // the otherwise absent /run.
-func (r *Runner) sandboxArgs() ([]string, error) {
+func (r *Runner) sandboxArgs(binary string, binds ...string) ([]string, error) {
 	home := os.Getenv("HOME")
 	if home == "" {
 		return nil, errors.New("intake sandbox requires HOME")
 	}
-	claude, err := filepath.EvalSymlinks(r.Claude)
+	agent, err := filepath.EvalSymlinks(binary)
 	if err != nil {
-		return nil, fmt.Errorf("intake sandbox cannot resolve claude: %w", err)
+		return nil, fmt.Errorf("intake sandbox cannot resolve %s: %w", filepath.Base(binary), err)
 	}
 	args := []string{"--unshare-pid", "--die-with-parent", "--new-session", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"}
 	for _, dir := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"} {
@@ -225,9 +273,11 @@ func (r *Runner) sandboxArgs() ([]string, error) {
 	if resolver, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil {
 		args = append(args, "--ro-bind-try", resolver, resolver)
 	}
-	config, state := filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json")
-	return append(args, "--tmpfs", home, "--bind-try", config, config, "--bind-try", state, state,
-		"--ro-bind", r.Checkout, r.Checkout, "--ro-bind", claude, claude, "--remount-ro", "/", "--chdir", r.Checkout, "--", claude), nil
+	args = append(args, "--tmpfs", home)
+	for i := 0; i+1 < len(binds); i += 2 {
+		args = append(args, "--bind-try", binds[i], binds[i+1])
+	}
+	return append(args, "--ro-bind", r.Checkout, r.Checkout, "--ro-bind", agent, agent, "--remount-ro", "/", "--chdir", r.Checkout, "--", agent), nil
 }
 
 // update moves the shared checkout to origin/main; a missing checkout is
