@@ -1112,9 +1112,12 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 	if err != nil {
 		return settings.unprobedModels("模型可用性登记无法读取")
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, modelhealth.ProbeTimeout)
-	defer cancel()
-	var probes sync.WaitGroup
+	type probeJob struct {
+		role     doctorModelRole
+		dir, key string
+	}
+	var jobs []probeJob
+	limit := agentcli.DefaultProbeTimeout
 	pending := map[string]*modelhealth.Status{}
 	projectRoles := make([][]doctorModelRole, len(eligible))
 	// Keys are computed once: probeKey reads PATH, which may change mid-run.
@@ -1132,10 +1135,19 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 			if pending[key] != nil {
 				continue
 			}
-			result := new(modelhealth.Status)
-			pending[key] = result
-			probes.Go(func() { *result = p.modelProbe(probeCtx, role.ref, project.Path, role.endpoint) })
+			pending[key] = new(modelhealth.Status)
+			jobs = append(jobs, probeJob{role, project.Path, key})
+			if profile, ok := agentcli.Lookup(role.ref.Agent); ok {
+				limit = max(limit, profile.ProbeLimit())
+			}
 		}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	var probes sync.WaitGroup
+	for _, job := range jobs {
+		result := pending[job.key]
+		probes.Go(func() { *result = p.modelProbe(probeCtx, job.role.ref, job.dir, job.role.endpoint) })
 	}
 	probes.Wait()
 

@@ -3,20 +3,43 @@ package agentcli
 
 import (
 	"cmp"
+	"fmt"
 	"maps"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
+const (
+	DefaultProbeTimeout = 120 * time.Second
+	MaxProbeTimeout     = 240 * time.Second
+)
+
+// ProbeTimeout bounds one model probe; zero means DefaultProbeTimeout.
+type ProbeTimeout time.Duration
+
+func (t *ProbeTimeout) UnmarshalText(text []byte) error {
+	d, err := time.ParseDuration(string(text))
+	if err != nil {
+		return fmt.Errorf("probe_timeout: %w", err)
+	}
+	if d <= 0 || d > MaxProbeTimeout {
+		return fmt.Errorf("probe_timeout %s must be positive and at most %s", d, MaxProbeTimeout)
+	}
+	*t = ProbeTimeout(d)
+	return nil
+}
+
 type Profile struct {
-	Name            string   `toml:"-"`
-	Binary          string   `toml:"binary"`
-	ProbeArgs       []string `toml:"probe_args"`
-	ReviewArgs      []string `toml:"review_args"`
-	CorrectionArgs  []string `toml:"correction_args"`
-	Relay           bool     `toml:"relay"`
+	Name            string       `toml:"-"`
+	Binary          string       `toml:"binary"`
+	ProbeArgs       []string     `toml:"probe_args"`
+	ReviewArgs      []string     `toml:"review_args"`
+	CorrectionArgs  []string     `toml:"correction_args"`
+	Relay           bool         `toml:"relay"`
+	ProbeTimeout    ProbeTimeout `toml:"probe_timeout"`
 	reviewPrefix    string
 	builtinReviewer bool
 	extendedContext bool
@@ -95,6 +118,10 @@ func Names() []string {
 	mu.RLock()
 	defer mu.RUnlock()
 	return slices.Sorted(maps.Keys(profiles))
+}
+
+func (p Profile) ProbeLimit() time.Duration {
+	return cmp.Or(time.Duration(p.ProbeTimeout), DefaultProbeTimeout)
 }
 
 func (p Profile) Executable() string { return cmp.Or(p.Binary, p.Name) }

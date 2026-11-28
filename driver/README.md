@@ -714,7 +714,7 @@ worker 首轮使用 `default`。无论是否升档，`AGENT_TIER_CHAIN` 都须�
 
 Claude 的 `reviewer` 和 `reviewer_small` 探测使用执行器启动 reviewer 时的端点。配置有效的 `AGENT_MODEL_PROXY_URL` 时，两类 reviewer 使用该代理。intake 与飞书网关一致：总是解析机器 `driver.env`（解析失败时 intake 行为 `unknown/config_invalid`），`AGENT_INTAKE_CLAUDE`、`AGENT_INTAKE_PI` 的非空进程环境值再覆盖文件值并去空白；`AGENT_INTAKE_CLAUDE` 须为绝对路径（为空时取 PATH 上的 `claude`），否则 intake 行显示 `unknown/config_invalid`；探测默认只传 `HOME` 和 `PATH`。配置模型中转站地址与凭证后，Claude intake 探针另带 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`。配置 `second_reviewer` 时，doctor 另列 `cross_reviewer` 行探测交叉审查的主 reviewer。两行都按交叉审查的规则选择凭证。命令须与生成的 Claude 命令逐字相同，模型名和 effort 都只能含允许的 shell 字面字符。使用默认模型的结构化角色（如 `claude::high`）也带中转站地址与凭证。旧式 `*_CMD` 命令必须写明模型名才带。旧式 reviewer 命令（`*_CMD`）是任意 shell：只含空白时按未配置处理；与结构化值生成的命令逐字相同、且模型名等不含 shell 引号或变量时按该值探测；其余不解析也不探测，该行报 `unknown/legacy_command`；PATH 上的 agent 与其绝对路径只探测一次。非隔离探针从继承的环境中剔除 `AGENT_MODEL_PROXY_TOKEN`。未配置代理的 reviewer、worker 和 resolver 探针仍可继承已有的 `ANTHROPIC_BASE_URL`。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
 
-doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环境隔离）去重。在首个需要该组合的项目中发送一次 `Reply with exactly: ok`，因此同一模型的继承端点、reviewer 代理和 intake 各探测一次。冷却期内也照常探测，各角色显示本轮对应端点的结果；本轮未能确认（`unknown`）而该模型仍在冷却时，显示登记的不可用状态。各行按本轮开始时的登记判定，之后才写入登记，`watch --dry-run` 与实际巡检判定一致。整批探测并发执行，共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low`、`--sandbox read-only` 和 `--ephemeral`，不留会话文件。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
+doctor 跨仓库按 `agent:model` 和端点（二进制、代理、凭证、环境隔离）去重。在首个需要该组合的项目中发送一次 `Reply with exactly: ok`，因此同一模型的继承端点、reviewer 代理和 intake 各探测一次。冷却期内也照常探测，各角色显示本轮对应端点的结果；本轮未能确认（`unknown`）而该模型仍在冷却时，显示登记的不可用状态。各行按本轮开始时的登记判定，之后才写入登记，`watch --dry-run` 与实际巡检判定一致。整批探测并发执行，共用本批 agent 中最大的 `probe_timeout`（默认 120 秒，上限 240 秒），并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low`、`--sandbox read-only` 和 `--ephemeral`，不留会话文件。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
 
 成功退出且回复恰为 `ok` 时记为 `ok`。以 `You've hit your … limit` 开头、在 `limit` 后结束或接 `·` 的 Claude 额度耗尽提示行（探测超时时须带 `· resets`；Codex 短句先于超时判定）和 Codex 录制样本中的 ChatGPT 账号不支持短句记为 `unavailable`。Claude 的重置提示按指定时区与观察年份解析，十二月收到的一月重置提示使用下一年。缺少有效的未来重置时间时冷却 30 分钟。超时、其他命令失败或无法识别的回复记为 `unknown`。
 
@@ -803,6 +803,8 @@ intake 的拒读 settings 增加 `Read(/proc/**)`。测试只断言该字符串�
 调度器与飞书需求网关的项目发现（OF-42、OF-43）用它运行 `<factory_root>/bin/orca-factory check <仓库路径>`
 核对候选仓库的流水线；缺省时发现结果把全部仓库判为不接管，调度器不领任何票。
 `repositories` 已删除（OF-43）。旧文件中残留的该键被忽略，不影响加载；部署后从 `driver.toml` 删去即可。
+
+`[agents.<名称>]` 节登记模型角色可用的 agent CLI（`binary`、`probe_args`、`review_args`、`correction_args`、`relay`）。`probe_timeout` 设定该 agent 单次模型探测的期限，取 TOML 时长字符串，须大于 0 且不超过 `"240s"`，不写时为 120 秒；取值无效时 driver.toml 加载失败。
 
 ```toml
 max_in_flight = 20

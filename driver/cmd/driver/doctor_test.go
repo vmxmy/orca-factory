@@ -1068,7 +1068,7 @@ func TestDoctorModelsConcurrent(t *testing.T) {
 		}
 		mu.Lock()
 		deadline, bounded := ctx.Deadline()
-		if !bounded || time.Until(deadline) > modelhealth.ProbeTimeout {
+		if !bounded || time.Until(deadline) > agentcli.DefaultProbeTimeout {
 			t.Error("probe batch missing its time limit")
 		}
 		if entered == 0 {
@@ -1909,5 +1909,41 @@ func TestConfiguredEffortProbeKey(t *testing.T) {
 	}
 	if calls["high"] != 1 || calls["low"] != 1 || states["worker_default"] != modelhealth.Unknown || states["reviewer"] != modelhealth.OK {
 		t.Fatalf("calls=%v role results=%v", calls, states)
+	}
+}
+
+func TestDoctorProbeDeadlineFollowsAgent(t *testing.T) {
+	agentcli.Register(agentcli.Profile{Name: "slow-probe", ProbeTimeout: agentcli.ProbeTimeout(240 * time.Second)})
+	for _, tc := range []struct {
+		name, reviewer string
+		want           time.Duration
+	}{
+		{"claude only", "claude:b:low", 120 * time.Second},
+		{"slow agent", "slow-probe:b:low", 240 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var remaining []time.Duration
+			p := modelFixtureProbe(time.Now(), t.TempDir())
+			p.modelProbe = func(ctx context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
+				deadline, _ := ctx.Deadline()
+				mu.Lock()
+				remaining = append(remaining, time.Until(deadline))
+				mu.Unlock()
+				return modelhealth.Classify(ref, "ok", nil, time.Now())
+			}
+			repo := config.Repository{Env: map[string]string{
+				"AGENT_TIER_DEFAULT": "claude:a:high", "AGENT_ROLE_REVIEWER": tc.reviewer, "AGENT_ROLE_RESOLVER": "claude:a:high", "AGENT_ROLE_INTAKE": "claude:a:high",
+			}}
+			p.checkModels(context.Background(), []projects.Project{{Name: "first", Path: "/first", Repository: repo}}, nil)
+			if len(remaining) == 0 {
+				t.Fatal("no probe ran")
+			}
+			for _, got := range remaining {
+				if got > tc.want || got < tc.want-10*time.Second {
+					t.Errorf("probe deadline in %v, want about %v", got, tc.want)
+				}
+			}
+		})
 	}
 }

@@ -53,7 +53,7 @@ func Probe(ctx context.Context, ref Ref, dir string, endpoint Endpoint) Status {
 	if binary == "" {
 		binary = profile.Executable()
 	}
-	output, err := runx.Run(ctx, runx.Spec{Path: binary, Args: args, Dir: dir, Env: env, Timeout: ProbeTimeout})
+	output, err := runx.Run(ctx, runx.Spec{Path: binary, Args: args, Dir: dir, Env: env, Timeout: profile.ProbeLimit()})
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		output = append(append(output, '\n'), exit.Stderr...)
