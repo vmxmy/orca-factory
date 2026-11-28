@@ -9,7 +9,7 @@
 
 ## Does Not Own
 
-- 执行器按可用性登记从 `AGENT_CORRECTION` 和 `AGENT_CORRECTION_FALLBACK` 中选择会话模型，correction 角色直接使用选定的模型。
+- 执行器按可用性登记从 `AGENT_CORRECTION` 和 `AGENT_CORRECTION_FALLBACK` 中选择会话模型。两个键在仓库 env 或 `profiles.toml` 配置，兜底是有序列表。correction 角色直接使用选定的模型。
 - 改代码、改测试、写或改 correction 文件以外的任何文件。
 - 派 worker、开子任务：由执行器负责。
 

@@ -114,7 +114,7 @@ func readProfiles(path string) (profileFile, error) {
 				continue
 			}
 			switch key {
-			case "AGENT_TIER_DEFAULT", "AGENT_TIER_STRONG", "AGENT_ROLE_RESOLVER", "AGENT_ROLE_INTAKE":
+			case "AGENT_TIER_DEFAULT", "AGENT_TIER_STRONG", "AGENT_ROLE_RESOLVER", "AGENT_ROLE_INTAKE", "AGENT_CORRECTION":
 				if _, err := modelhealth.Parse(value); err != nil {
 					return profileFile{}, fmt.Errorf("profiles.toml: profile %s key %s requires agent:model:effort", name, key)
 				}
@@ -151,7 +151,7 @@ func IsFallbackKey(key string) bool {
 		return false
 	}
 	switch base {
-	case "AGENT_ROLE_RESOLVER", "AGENT_ROLE_RESOLVER_TOP", "AGENT_ROLE_INTAKE", "AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_SECOND_REVIEWER":
+	case "AGENT_ROLE_RESOLVER", "AGENT_ROLE_RESOLVER_TOP", "AGENT_ROLE_INTAKE", "AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_SECOND_REVIEWER", "AGENT_CORRECTION":
 		return true
 	}
 	return tierKey.MatchString(base) && base != "AGENT_TIER_ESCALATE" && base != "AGENT_TIER_CHAIN"

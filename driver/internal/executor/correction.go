@@ -43,18 +43,22 @@ func (e *Executor) recovery() Recovery {
 	return nil
 }
 
-func correctionPrimary() modelhealth.Ref {
-	if ref, err := modelhealth.Parse(os.Getenv("AGENT_CORRECTION")); err == nil {
-		return ref
-	}
-	return modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
+var defaultCorrectionCandidates = []modelhealth.Ref{
+	{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"},
+	{Agent: "codex", Model: "gpt-6.2-astra", Effort: "high"},
 }
 
-func correctionFallbackModel() modelhealth.Ref {
-	if ref, err := modelhealth.Parse(os.Getenv("AGENT_CORRECTION_FALLBACK")); err == nil {
-		return ref
+// correctionCandidates keeps the built-in primary or fallback wherever the
+// configured value is unset or invalid.
+func correctionCandidates(primary, fallback string) []modelhealth.Ref {
+	candidates := slices.Clone(defaultCorrectionCandidates)
+	if ref, err := modelhealth.Parse(primary); err == nil {
+		candidates[0] = ref
 	}
-	return modelhealth.Ref{Agent: "codex", Model: "gpt-6.2-astra", Effort: "high"}
+	if refs, err := config.ParseFallback(fallback); err == nil && len(refs) > 0 {
+		candidates = append(candidates[:1], refs...)
+	}
+	return candidates
 }
 
 func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error {
@@ -63,14 +67,18 @@ func (c *Commands) Correction(ctx context.Context, req CorrectionRequest) error 
 		return err
 	}
 	prompt := fmt.Sprintf("%s\n\nCorrection file: %q\nCorrection: %d/3\nFailure: %s\nBrief:\n%s", role, req.Path, req.Number, req.Cause, req.Brief)
-	ref := correctionPrimary()
+	candidates := c.CorrectionCandidates
+	if len(candidates) == 0 {
+		candidates = defaultCorrectionCandidates
+	}
+	ref := candidates[0]
 	if c.StateRoot != "" {
 		registry, err := modelhealth.Open(c.StateRoot)
 		if err != nil {
 			return fmt.Errorf("correction model registry: %w", err)
 		}
 		var ok bool
-		if ref, ok = registry.Select([]modelhealth.Ref{ref, correctionFallbackModel()}, time.Now()); !ok {
+		if ref, ok = registry.Select(candidates, time.Now()); !ok {
 			return errors.New("all correction model candidates unavailable")
 		}
 	}

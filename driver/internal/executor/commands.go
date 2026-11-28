@@ -33,7 +33,10 @@ type Commands struct {
 	// registry that decides between them.
 	ReviewerCandidates      []modelhealth.Ref
 	ReviewerSmallCandidates []modelhealth.Ref
-	StateRoot               string
+	// CorrectionCandidates is the correction session's primary followed by
+	// its ordered fallbacks; empty means the built-in pair.
+	CorrectionCandidates []modelhealth.Ref
+	StateRoot            string
 	// InstallCommand comes from the primary checkout's profile, never from the
 	// head under verification. Gate runs it in the verify checkout first.
 	InstallCommand string
