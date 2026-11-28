@@ -1027,7 +1027,8 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	}
 	if hasReviewer && hasSecondReviewer {
 		cross := reviewer
-		cross.name, cross.key, cross.endpoint = "cross_reviewer", "", modelhealth.Endpoint{Binary: reviewer.endpoint.Binary, Isolated: true}
+		// Cross review selects among the reviewer fallbacks too (crossReviewCommand).
+		cross.name, cross.endpoint = "cross_reviewer", modelhealth.Endpoint{Binary: reviewer.endpoint.Binary, Isolated: true}
 		roles = append(roles, cross)
 	}
 	if raw := env["AGENT_ROLE_RESOLVER_TOP"]; raw != "" {
