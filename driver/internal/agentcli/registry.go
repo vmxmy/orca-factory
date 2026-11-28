@@ -11,15 +11,19 @@ import (
 )
 
 type Profile struct {
-	Name            string   `toml:"-"`
-	Binary          string   `toml:"binary"`
-	ProbeArgs       []string `toml:"probe_args"`
-	ReviewArgs      []string `toml:"review_args"`
-	CorrectionArgs  []string `toml:"correction_args"`
-	Relay           bool     `toml:"relay"`
-	reviewPrefix    string
-	builtinReviewer bool
-	extendedContext bool
+	Name           string   `toml:"-"`
+	Binary         string   `toml:"binary"`
+	ProbeArgs      []string `toml:"probe_args"`
+	ReviewArgs     []string `toml:"review_args"`
+	CorrectionArgs []string `toml:"correction_args"`
+	// IntakeArgs start an intake conversation; IntakeResumeArgs continue the
+	// one {conversation} names.
+	IntakeArgs       []string `toml:"intake_args"`
+	IntakeResumeArgs []string `toml:"intake_resume_args"`
+	Relay            bool     `toml:"relay"`
+	reviewPrefix     string
+	builtinReviewer  bool
+	extendedContext  bool
 }
 
 // registered holds built-in and programmatic profiles across machine config reloads.
@@ -45,6 +49,8 @@ func (p Profile) clone() Profile {
 	p.ProbeArgs = slices.Clone(p.ProbeArgs)
 	p.ReviewArgs = slices.Clone(p.ReviewArgs)
 	p.CorrectionArgs = slices.Clone(p.CorrectionArgs)
+	p.IntakeArgs = slices.Clone(p.IntakeArgs)
+	p.IntakeResumeArgs = slices.Clone(p.IntakeResumeArgs)
 	return p
 }
 
@@ -110,8 +116,9 @@ func (p Profile) InheritEnv(key string) bool {
 	return true
 }
 
-func expand(template []string, model, effort, prompt, dir string, omitEmpty bool) []string {
-	sub := strings.NewReplacer("{model}", model, "{effort}", effort, "{prompt}", prompt, "{dir}", dir)
+// extra holds further placeholder and value pairs.
+func expand(template []string, model, effort, prompt, dir string, omitEmpty bool, extra ...string) []string {
+	sub := strings.NewReplacer(append([]string{"{model}", model, "{effort}", effort, "{prompt}", prompt, "{dir}", dir}, extra...)...)
 	args := make([]string, 0, len(template))
 	options := true
 	for i, arg := range template {
@@ -144,6 +151,15 @@ func (p Profile) ProbeArgv(model, effort, prompt string) []string {
 		}
 	}
 	return append(args, prompt)
+}
+
+// IntakeArgv starts a conversation when conversation is empty and resumes it
+// otherwise.
+func (p Profile) IntakeArgv(model, effort, prompt, conversation string) []string {
+	if conversation == "" {
+		return expand(p.IntakeArgs, model, effort, prompt, "", true)
+	}
+	return expand(p.IntakeResumeArgs, model, effort, prompt, "", true, "{conversation}", conversation)
 }
 
 func (p Profile) CorrectionArgv(model, effort, prompt, dir string) []string {
