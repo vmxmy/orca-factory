@@ -971,6 +971,18 @@ func (s doctorModelSettings) intakeRole(env map[string]string, claudeTier, pi st
 	return doctorModelRole{name: "intake", ref: modelhealth.Ref{Agent: "pi", Model: provider + "/" + model, Effort: thinking}}
 }
 
+// reviewerProxy routes a reviewer through the model proxy only when its own
+// agent is a relay agent, as the executor does for each selected candidate.
+func (s doctorModelSettings) reviewerProxy(role doctorModelRole) doctorModelRole {
+	if profile, _ := agentcli.Lookup(role.ref.Agent); profile.Relay {
+		role.endpoint.BaseURL = s.proxyURL
+		if s.proxyErr != nil {
+			role.reason = "model_proxy_invalid"
+		}
+	}
+	return role
+}
+
 func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelRole {
 	env := project.Repository.Env
 	roles := workerModelRoles(env)
@@ -1003,12 +1015,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 			if role.Role == "reviewer" {
 				hasReviewer, reviewer = true, modelRole
 			}
-			if profile, _ := agentcli.Lookup(ref.Agent); profile.Relay {
-				modelRole.endpoint.BaseURL = s.proxyURL
-				if s.proxyErr != nil {
-					modelRole.reason = "model_proxy_invalid"
-				}
-			}
+			modelRole = s.reviewerProxy(modelRole)
 		case "second_reviewer":
 			// Cross review uses isolated environments (scheduler/crossreview.go).
 			modelRole.endpoint.Isolated = true
@@ -1047,11 +1054,12 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		pi = s.intakePi
 	}
 	intakeRole := s.intakeRole(env, intakeTier, pi)
-	if intakeRole.reason == "" {
+	if intakeRole.reason == "" && pi == "" {
 		intakeRole.key = "AGENT_ROLE_INTAKE"
 	}
 	roles = append(roles, intakeRole)
-	// Fallback candidates share the primary's endpoint and retry group.
+	// Fallback candidates share the primary's endpoint and retry group; a
+	// reviewer candidate's model proxy follows its own agent.
 	for _, role := range roles {
 		raw := env[config.FallbackKey(role.key)]
 		if role.key == "" || raw == "" {
@@ -1065,6 +1073,10 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		for _, ref := range refs {
 			candidate := role
 			candidate.ref, candidate.key = ref, ""
+			if role.name == "reviewer" || role.name == "reviewer_small" {
+				candidate.endpoint.BaseURL, candidate.reason = "", ""
+				candidate = s.reviewerProxy(candidate)
+			}
 			// AGENT_INTAKE_CLAUDE runs claude candidates only.
 			if role.name == "intake" && intakeAgent(role.ref.Agent) {
 				candidate.endpoint.Binary = ""
