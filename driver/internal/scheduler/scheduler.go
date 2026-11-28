@@ -557,6 +557,8 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				continue
 			}
 			switch {
+			case legacy.HasPR && t.Handoff == nil:
+				action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "legacy PR without frozen handoff"}
 			case legacy.HasPR:
 				action = Action{Kind: Merge, Attempt: t.Attempt, Phase: machine.PhaseMergeQueue}
 			case legacy.Complete:

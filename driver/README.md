@@ -187,7 +187,7 @@ worker 运行期有两道看守，都由 `driver exec` 读取环境变量，缺�
 
 ### 守护进程被杀后的恢复
 
-已有 PR、没有 checkpoint 且账本缺少冻结合并交接时，执行器首次恢复就转处置 Agent，正常退出。账本事件以 `Agent处置: existing PR has no frozen handoff` 开头，证据包含 PR 号和分支 head，`attempt=2` 沿用原来第二次失败后转处置的值；无需等待 `executor failed twice`。由处置 Agent 核验保留的 PR 与分支，执行器不会启动 worker 或补跑 gate、reviewer。交接损坏或冲突仍报错等待，有 checkpoint 时缺交接仍重新取证。
+已有 PR、没有 checkpoint 且账本缺少冻结合并交接时，执行器首次恢复就转处置 Agent，正常退出。账本事件以 `Agent处置: existing PR has no frozen handoff` 开头，证据包含 PR 号和分支 head，`attempt=2` 沿用原来第二次失败后转处置的值；无需等待 `executor failed twice`。由处置 Agent 核验保留的 PR 与分支，执行器不会启动 worker 或补跑 gate、reviewer。交接损坏或冲突仍报错等待，有 checkpoint 时缺交接仍重新取证。调度器接管 legacy 票时同样处理：票有 PR 但账本缺少冻结交接时转处置 Agent，不直接进合并通道。
 
 终端句柄存在或派工显示 active 都不能证明执行器进程还活着：进程被外部 `kill` 后，终端和派工记录可能长时间保持原样。调度器因此读取 `driver exec`（处置 Agent 为 `driver resolve`）每 30 秒写入的心跳文件 `<状态根>/<仓库名>/<票号>/executor.heartbeat.json`（处置 Agent 为 `resolver.heartbeat.json`），字段与判定见 [CONTRACTS.md](CONTRACTS.md)。
 
