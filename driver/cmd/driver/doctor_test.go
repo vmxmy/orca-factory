@@ -736,7 +736,7 @@ func TestDoctorModelsFallbackEndpointFollowsCandidate(t *testing.T) {
 	s := doctorModelSettings{proxyURL: proxy}
 	roles := s.modelRoles(projects.Project{Repository: config.Repository{Env: map[string]string{
 		"AGENT_ROLE_REVIEWER": "codex:primary:high", "AGENT_ROLE_REVIEWER_FALLBACK": "claude:backup:high codex:spare:high",
-		"AGENT_INTAKE_PI": "anthropic/fable:high", "AGENT_ROLE_INTAKE_FALLBACK": "claude:backup:high",
+		"AGENT_ROLE_INTAKE": "claude:intake:high", "AGENT_INTAKE_PI": "pi:anthropic/fable:high", "AGENT_ROLE_INTAKE_FALLBACK": "claude:backup:high",
 	}}})
 	want := map[string]string{"primary": "", "backup": proxy, "spare": ""}
 	reviewers, intakes := 0, 0
@@ -749,10 +749,27 @@ func TestDoctorModelsFallbackEndpointFollowsCandidate(t *testing.T) {
 			}
 		case "intake":
 			intakes++
+			if role.ref.Agent != "pi" {
+				t.Errorf("intake row = %+v, want the configured pi tier", role)
+			}
 		}
 	}
 	if reviewers != 3 || intakes != 1 {
 		t.Fatalf("reviewer rows = %d, intake rows = %d: %+v", reviewers, intakes, roles)
+	}
+
+	s.proxyErr = errors.New("invalid proxy")
+	roles = s.modelRoles(projects.Project{Repository: config.Repository{Env: map[string]string{
+		"AGENT_ROLE_REVIEWER": "claude:primary:high", "AGENT_ROLE_REVIEWER_FALLBACK": "codex:spare:high",
+	}}})
+	reasons := map[string]string{}
+	for _, role := range roles {
+		if role.name == "reviewer" {
+			reasons[role.ref.Model] = role.reason + "|" + role.endpoint.BaseURL
+		}
+	}
+	if reasons["primary"] != "model_proxy_invalid|"+proxy || reasons["spare"] != "|" {
+		t.Fatalf("reviewer reason|BaseURL = %v", reasons)
 	}
 }
 
