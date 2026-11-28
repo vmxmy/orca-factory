@@ -2,6 +2,7 @@ package intake
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -171,6 +172,42 @@ func TestAntigravityIntakeTurn(t *testing.T) {
 	}
 	if _, err := os.Stat(claudeRan); err == nil {
 		t.Fatal("claude started for an antigravity session")
+	}
+}
+
+// agy can exit 0 with a result that is not SUCCESS. The recorded result with
+// its status and response replaced stands in for it: the response goes to
+// model error classification, and a new session moves to the next candidate.
+func TestAntigravityFailedResultIsClassified(t *testing.T) {
+	runner, _, claudeRan := antigravityRunner(t)
+	b, err := os.ReadFile("../../testdata/recorded/agy-print-json-result.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(b, &result); err != nil {
+		t.Fatal(err)
+	}
+	result["status"], result["response"] = "ERROR", "You've hit your usage limit"
+	if b, err = json.Marshal(result); err != nil {
+		t.Fatal(err)
+	}
+	profile, _ := agentcli.Lookup("antigravity")
+	writeFile(t, profile.Binary, fmt.Sprintf("#!/bin/sh\nprintf '%%s' %q\n", string(b)), 0o755)
+	got, err := runner.Turn(context.Background(), Turn{Session: "55555555-5555-4555-8555-555555555555", Prompt: "hi"})
+	if err != nil || got != "claude" {
+		t.Fatalf("turn = %q, %v; want the claude fallback", got, err)
+	}
+	if _, err := os.Stat(claudeRan); err != nil {
+		t.Fatal("claude fallback did not run")
+	}
+	registry, err := modelhealth.Open(runner.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agy := modelhealth.Ref{Agent: "antigravity", Model: runner.Model, Effort: runner.Effort}
+	if status := registry.Status(agy, time.Now()); status.State != modelhealth.Unavailable || status.Reason != "usage_limit" {
+		t.Fatalf("agy status = %+v, want usage_limit", status)
 	}
 }
 

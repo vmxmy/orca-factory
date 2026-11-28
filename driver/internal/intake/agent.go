@@ -195,6 +195,11 @@ func printResult(b []byte) (claudePrintResult, bool) {
 // does not exist or is not accessible
 // (testdata/recorded/claude-print-json-model-error.json).
 func turnStatus(model modelhealth.Ref, output []byte, failure error, now time.Time) modelhealth.Status {
+	if model.Agent == antigravity {
+		if agy, _ := agyAnswer(output); agy.Status != "" {
+			output = []byte(agy.Response)
+		}
+	}
 	result, ok := printResult(output)
 	if !ok || !result.IsError {
 		var exit *exec.ExitError
