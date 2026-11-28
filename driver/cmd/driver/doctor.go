@@ -1065,6 +1065,13 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		for _, ref := range refs {
 			candidate := role
 			candidate.ref, candidate.key = ref, ""
+			// AGENT_INTAKE_CLAUDE runs claude candidates only.
+			if role.name == "intake" && intakeAgent(role.ref.Agent) {
+				candidate.endpoint.Binary = ""
+				if ref.Agent == "claude" {
+					candidate.endpoint.Binary = s.intakeClaude
+				}
+			}
 			roles = append(roles, candidate)
 		}
 	}

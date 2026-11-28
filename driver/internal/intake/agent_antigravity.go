@@ -109,11 +109,7 @@ func (r *Runner) antigravity(ctx context.Context, t Turn, model modelhealth.Ref,
 		return nil, err
 	}
 	args := profile.IntakeArgv(model.Model, model.Effort, prompt, conversation)
-	b, err := r.sandboxed(ctx, append(sandbox, args...), []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}, "")
-	if _, ok := agyAnswer(b); err == nil && !ok {
-		err = errors.New("intake antigravity turn returned no answer")
-	}
-	return b, err
+	return r.sandboxed(ctx, append(sandbox, args...), []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}, "")
 }
 
 // agyPrintResult is agy --print --output-format json
@@ -124,19 +120,11 @@ type agyPrintResult struct {
 	Response       string `json:"response"`
 }
 
-// agyAnswer parses an agy result; ok means agy answered.
-func agyAnswer(b []byte) (result agyPrintResult, ok bool) {
-	if json.Unmarshal(b, &result) != nil {
-		return result, false
-	}
-	return result, result.Status == "SUCCESS" && strings.TrimSpace(result.Response) != "" && conversationID.MatchString(result.ConversationID)
-}
-
 // antigravityAnswer returns the turn's reply and pins the session to the
 // conversation agy reports.
 func (r *Runner) antigravityAnswer(session string, b []byte) (string, error) {
-	result, ok := agyAnswer(b)
-	if !ok {
+	var result agyPrintResult
+	if json.Unmarshal(b, &result) != nil || result.Status != "SUCCESS" || strings.TrimSpace(result.Response) == "" || !conversationID.MatchString(result.ConversationID) {
 		return "", errors.New("intake agent returned no result")
 	}
 	if err := r.recordSessionAgent(session, sessionAgent{Agent: antigravity, Conversation: result.ConversationID}); err != nil {
