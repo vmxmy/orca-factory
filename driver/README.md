@@ -706,7 +706,7 @@ AGENT_TIER_ESCALATE = "0"
 
 ## 模型可用性（OF-592）
 
-`orca-factory-driver doctor --json` 的 `checks.models.details` 按仓库和角色列出模型引用、状态、原因、冷却截止时间和检查时间。文本报告也逐行显示结果。工作各档、`reviewer`、`reviewer_small`、`second_reviewer`、`resolver`、`resolver_top`、`intake` 配置了 `<键名>_FALLBACK` 时，每个兜底候选另列一行同名角色，沿用主选的端点与中转判定，与主选同属一个可重试分组；主选冷却但兜底可用为 `warn`。兜底解析失败时该角色另列一行 `unknown/config_invalid`。旧式 `*_CMD` 命令没有兜底。缺少默认 worker、主 reviewer 或 intake 时，对应行显示 `unknown/not_configured`。角色档位配置无效时，该行显示 `unknown/config_invalid`，其他角色和仓库继续检查。pipeline 检查或仓库配置加载失败而未被接管的仓库（账本项目表可读时仅限按最后一行启用的仓库），以远端列一行 `profile`，显示 `unknown/config_invalid`。这些情况都使整项为 `fail`。
+`orca-factory-driver doctor --json` 的 `checks.models.details` 按仓库和角色列出模型引用、状态、原因、冷却截止时间和检查时间。文本报告也逐行显示结果。工作各档、`reviewer`、`reviewer_small`、`second_reviewer`、`resolver`、`resolver_top`、`intake` 配置了 `<键名>_FALLBACK` 时，每个兜底候选另列一行同名角色，沿用主选的端点与中转判定，与主选同属一个可重试分组；主选冷却但兜底可用为 `warn`。`cross_reviewer` 与调度器交叉审查一致，沿用 `AGENT_ROLE_REVIEWER_FALLBACK`。兜底解析失败时该角色另列一行 `unknown/config_invalid`。旧式 `*_CMD` 命令没有兜底。缺少默认 worker、主 reviewer 或 intake 时，对应行显示 `unknown/not_configured`。角色档位配置无效时，该行显示 `unknown/config_invalid`，其他角色和仓库继续检查。pipeline 检查或仓库配置加载失败而未被接管的仓库（账本项目表可读时仅限按最后一行启用的仓库），以远端列一行 `profile`，显示 `unknown/config_invalid`。这些情况都使整项为 `fail`。
 
 worker 首轮使用 `default`。无论是否升档，`AGENT_TIER_CHAIN` 都须合法，空值使用 `default strong`。启用 `AGENT_TIER_ESCALATE=1` 时，链必须含 `default`，每个档位都须配置合法的模型引用。候选包括 `default` 和最多 3 次 correction 能到达的后续档位。窗口外格式错误的档位单独报错，合法的档位省略。关闭升档时只有 `default` 是候选。
 
