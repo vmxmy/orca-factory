@@ -1913,7 +1913,8 @@ func TestConfiguredEffortProbeKey(t *testing.T) {
 }
 
 func TestDoctorProbeDeadlineFollowsAgent(t *testing.T) {
-	agentcli.Register(agentcli.Profile{Name: "slow-probe", ProbeTimeout: agentcli.ProbeTimeout(240 * time.Second)})
+	agentcli.Configure(map[string]agentcli.Profile{"slow-probe": {ProbeTimeout: agentcli.ProbeTimeout(240 * time.Second)}})
+	t.Cleanup(func() { agentcli.Configure(nil) })
 	for _, tc := range []struct {
 		name, reviewer string
 		want           time.Duration
