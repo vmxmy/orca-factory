@@ -494,8 +494,8 @@ func TestProfileProbeTimeout(t *testing.T) {
 			}
 			_, err := config.Load(home)
 			if tc.fails {
-				if err == nil {
-					t.Fatalf("Load accepted %q", tc.line)
+				if err == nil || !strings.Contains(err.Error(), "agents.slow") {
+					t.Fatalf("Load(%q) error = %v; want it to name agents.slow", tc.line, err)
 				}
 				return
 			}
