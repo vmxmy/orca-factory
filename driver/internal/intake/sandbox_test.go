@@ -6,8 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/agentcli"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 )
 
 // standInBwrap runs the wrapped command as is, for tests whose stand-in claude
@@ -101,5 +105,69 @@ func TestRunnerTurnRefusesWithoutSandbox(t *testing.T) {
 	}
 	if _, err := os.Stat(ran); err == nil {
 		t.Fatal("claude started without a sandbox")
+	}
+}
+
+// antigravityRunner wires a Runner whose primary candidate is antigravity and
+// whose fallback is claude: the stand-in agy logs each argv under logs and
+// prints the recorded agy result, and the stand-in claude only marks claudeRan.
+func antigravityRunner(t *testing.T) (runner *Runner, logs, claudeRan string) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	git(t, root, "init", "-q", "--bare", "-b", "main", "origin.git")
+	repo := filepath.Join(root, "repo")
+	git(t, root, "init", "-q", "-b", "main", repo)
+	git(t, repo, "remote", "add", "origin", filepath.Join(root, "origin.git"))
+	commit(t, repo, "scripts/agent-gates/roles/intake-chat.md")
+	recorded, err := filepath.Abs("../../testdata/recorded/agy-print-json-result.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs, claudeRan = filepath.Join(root, "calls"), filepath.Join(root, "claude-ran")
+	if err := os.Mkdir(logs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	agy := filepath.Join(root, "agy")
+	writeFile(t, agy, "#!/bin/sh\nd=$(mktemp -d "+logs+"/call.XXXXXX)\nprintf '%s\\0' \"$@\" > $d/args\n: > $d/env\npwd | tr -d '\\n' > $d/cwd\n: > $d/stdin\nexec cat "+recorded+"\n", 0o755)
+	claude := filepath.Join(root, "claude")
+	writeFile(t, claude, "#!/bin/sh\ntouch "+claudeRan+"\nprintf '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"claude\"}'\n", 0o755)
+	agentcli.Configure(map[string]agentcli.Profile{"antigravity": {Binary: agy,
+		IntakeArgs:       []string{"--print={prompt}", "--model", "{model}", "--effort", "{effort}"},
+		IntakeResumeArgs: []string{"--print={prompt}", "--conversation", "{conversation}", "--model", "{model}", "--effort", "{effort}"}}})
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	runner = &Runner{Agent: "antigravity", Claude: claude, Bwrap: standInBwrap(t), Repo: repo, Checkout: filepath.Join(root, "checkout"),
+		Model: "gemini-4-neon-high", Effort: "high", Fallback: []modelhealth.Ref{{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}},
+		StateRoot: filepath.Join(root, "state"), Timeout: 10 * time.Second}
+	return runner, logs, claudeRan
+}
+
+func TestAntigravityIntakeTurn(t *testing.T) {
+	runner, logs, claudeRan := antigravityRunner(t)
+	const session, conversation = "33333333-3333-4333-8333-333333333333", "2e3a6cbc-b7e6-4367-a478-6315c666ec4c"
+	for i, resume := range []bool{false, true} {
+		got, err := runner.Turn(context.Background(), Turn{Session: session, Resume: resume, Prompt: "-p hi"})
+		if err != nil || got != "OK" {
+			t.Fatalf("turn %d = %q, %v", i, got, err)
+		}
+		recorded := calls(t, logs)
+		if len(recorded) != 1 {
+			t.Fatalf("turn %d calls %d", i, len(recorded))
+		}
+		args := recorded[0].args
+		plan := slices.Index(args, "--mode")
+		if plan < 0 || plan+1 >= len(args) || args[plan+1] != "plan" {
+			t.Fatalf("turn %d argv lacks --mode plan: %q", i, args)
+		}
+		resumed := slices.Index(args, "--conversation")
+		if !resume && resumed >= 0 {
+			t.Fatalf("first turn resumes a conversation: %q", args)
+		}
+		if resume && (resumed < 0 || resumed+1 >= len(args) || args[resumed+1] != conversation) {
+			t.Fatalf("second turn argv lacks --conversation %s: %q", conversation, args)
+		}
+	}
+	if _, err := os.Stat(claudeRan); err == nil {
+		t.Fatal("claude started for an antigravity session")
 	}
 }

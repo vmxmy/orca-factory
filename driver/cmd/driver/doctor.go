@@ -951,13 +951,16 @@ func (s doctorModelSettings) intakeRole(env map[string]string, claudeTier, pi st
 	if claudeTier == "" {
 		return doctorModelRole{name: "intake", reason: "not_configured"}
 	}
-	model, effort, err := tierParts(env)
+	primary, _, err := tierParts(env)
 	if err != nil || s.driverEnvErr != nil || s.intakeClaudeErr != nil {
 		return invalidModelRole("intake", claudeTier)
 	}
 	if pi == "" {
-		return doctorModelRole{name: "intake", ref: modelhealth.Ref{Agent: "claude", Model: model, Effort: effort},
-			endpoint: modelhealth.Endpoint{Binary: s.intakeClaude, Isolated: true}}
+		endpoint := modelhealth.Endpoint{Isolated: true}
+		if primary.Agent == "claude" {
+			endpoint.Binary = s.intakeClaude
+		}
+		return doctorModelRole{name: "intake", ref: primary, endpoint: endpoint}
 	}
 	provider, model, thinking, err := intake.ParsePiTier(pi)
 	if err != nil {

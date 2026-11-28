@@ -22,6 +22,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -156,7 +157,7 @@ func TestResolveIntakeProjectsPartialTierFailure(t *testing.T) {
 	if !slices.Equal(usable, []string{"OF"}) {
 		t.Fatalf("usable=%v, want only OF", usable)
 	}
-	const wantReason = "需求助手档位不是 claude（AGENT_ROLE_INTAKE）"
+	const wantReason = "需求助手档位不是 claude 或 antigravity（AGENT_ROLE_INTAKE）"
 	if unavailable["ZY"] != wantReason || unavailable["AN"] != wantReason {
 		t.Fatalf("unavailable=%+v, want %q for ZY and AN", unavailable, wantReason)
 	}
@@ -721,6 +722,25 @@ func TestModelRelayGateway(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), token) {
 			t.Fatal("credential leaked by gateway")
+		}
+	}
+}
+
+func TestIntakeTierAcceptsAntigravity(t *testing.T) {
+	primary, fallback, err := tierParts(map[string]string{
+		"AGENT_ROLE_INTAKE":          "antigravity:gemini-4-neon-high:high",
+		"AGENT_ROLE_INTAKE_FALLBACK": "antigravity:gemini-4-neon-xhigh:xhigh claude:claude-opus-5-5:high",
+	})
+	want := []modelhealth.Ref{{Agent: "antigravity", Model: "gemini-4-neon-xhigh", Effort: "xhigh"}, {Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}}
+	if err != nil || primary != (modelhealth.Ref{Agent: "antigravity", Model: "gemini-4-neon-high", Effort: "high"}) || !slices.Equal(fallback, want) {
+		t.Fatalf("tierParts = %+v %+v %v", primary, fallback, err)
+	}
+	for _, env := range []map[string]string{
+		{"AGENT_ROLE_INTAKE": "codex:gpt-6.2-astra:high"},
+		{"AGENT_ROLE_INTAKE": "antigravity:gemini-4-neon-high:high", "AGENT_ROLE_INTAKE_FALLBACK": "codex:gpt-6.2-astra:high"},
+	} {
+		if _, _, err := tierParts(env); err == nil {
+			t.Errorf("tierParts(%v) accepted codex", env)
 		}
 	}
 }
