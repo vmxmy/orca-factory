@@ -872,6 +872,8 @@ type doctorModelRole struct {
 	endpoint modelhealth.Endpoint
 	reason   string
 	legacy   bool
+	// key names the structured setting whose FallbackKey lists candidates.
+	key string
 }
 
 const invalidRelayReason = "模型中转站配置无效，网关与交叉审查无法启动"
@@ -934,7 +936,7 @@ func workerModelRoles(env map[string]string) []doctorModelRole {
 			if ref.Model == "" {
 				ref.Effort = ""
 			}
-			roles = append(roles, doctorModelRole{name: name, ref: ref})
+			roles = append(roles, doctorModelRole{name: name, ref: ref, key: "AGENT_TIER_" + strings.ToUpper(tier)})
 		}
 	}
 	// The executor validates the entire chain at startup when escalation is enabled.
@@ -977,7 +979,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	var intakeTier string
 	for _, role := range repositoryRoles(env, project.Repository.Sources) {
 		ref := modelhealth.Ref{Agent: role.Agent, Model: role.Model, Effort: role.Effort}
-		modelRole := doctorModelRole{name: role.Role, ref: ref}
+		modelRole := doctorModelRole{name: role.Role, ref: ref, key: role.Key}
 		if strings.HasSuffix(role.Key, "_CMD") || strings.HasSuffix(role.Key, "_CMD_SMALL") {
 			command := strings.TrimSpace(role.Raw)
 			if command == "" {
@@ -994,7 +996,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 				ref = modelhealth.Ref{}
 				modelRole = doctorModelRole{name: role.Role, reason: "legacy_command"}
 			}
-			modelRole.legacy = true
+			modelRole.legacy, modelRole.key = true, ""
 		}
 		switch role.Role {
 		case "reviewer", "reviewer_small":
@@ -1028,12 +1030,13 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	}
 	if hasReviewer && hasSecondReviewer {
 		cross := reviewer
+		// Cross review selects among the reviewer fallbacks too (crossReviewCommand).
 		cross.name, cross.endpoint = "cross_reviewer", modelhealth.Endpoint{Binary: reviewer.endpoint.Binary, Isolated: true}
 		roles = append(roles, cross)
 	}
 	if raw := env["AGENT_ROLE_RESOLVER_TOP"]; raw != "" {
 		ref, err := modelhealth.Parse(raw)
-		role := doctorModelRole{name: "resolver_top", ref: ref}
+		role := doctorModelRole{name: "resolver_top", ref: ref, key: "AGENT_ROLE_RESOLVER_TOP"}
 		if err != nil || !agentcli.Registered(ref.Agent) || ref.Model == "" || ref.Effort == "" {
 			role = invalidModelRole("resolver_top", raw)
 		}
@@ -1043,7 +1046,28 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	if pi == "" {
 		pi = s.intakePi
 	}
-	roles = append(roles, s.intakeRole(env, intakeTier, pi))
+	intakeRole := s.intakeRole(env, intakeTier, pi)
+	if intakeRole.reason == "" {
+		intakeRole.key = "AGENT_ROLE_INTAKE"
+	}
+	roles = append(roles, intakeRole)
+	// Fallback candidates share the primary's endpoint and retry group.
+	for _, role := range roles {
+		raw := env[config.FallbackKey(role.key)]
+		if role.key == "" || raw == "" {
+			continue
+		}
+		refs, err := config.ParseFallback(raw)
+		if err != nil {
+			roles = append(roles, invalidModelRole(role.name, ""))
+			continue
+		}
+		for _, ref := range refs {
+			candidate := role
+			candidate.ref, candidate.key = ref, ""
+			roles = append(roles, candidate)
+		}
+	}
 	for i, role := range roles {
 		if profile, _ := agentcli.Lookup(role.ref.Agent); role.endpoint.Isolated && profile.Relay {
 			if s.relayErr != nil {

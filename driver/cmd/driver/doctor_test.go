@@ -690,6 +690,48 @@ func TestDoctorModels(t *testing.T) {
 	}
 }
 
+func TestDoctorModelsCountsFallbackCandidates(t *testing.T) {
+	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name        string
+		env         map[string]string
+		unavailable []string
+		role        string
+		want        string
+	}{
+		{"reviewer fallback available", map[string]string{"AGENT_ROLE_REVIEWER": "codex:primary:high", "AGENT_ROLE_REVIEWER_FALLBACK": "claude:backup:high"}, []string{"primary"}, "reviewer", "warn"},
+		{"reviewer fallback unavailable", map[string]string{"AGENT_ROLE_REVIEWER": "codex:primary:high", "AGENT_ROLE_REVIEWER_FALLBACK": "claude:backup:high"}, []string{"primary", "backup"}, "reviewer", "fail"},
+		{"worker fallback available", map[string]string{"AGENT_TIER_DEFAULT": "codex:primary:high", "AGENT_TIER_DEFAULT_FALLBACK": "claude:backup:high"}, []string{"primary"}, "worker_default", "warn"},
+		{"cross reviewer fallback available", map[string]string{"AGENT_ROLE_REVIEWER": "codex:primary:high", "AGENT_ROLE_REVIEWER_FALLBACK": "claude:backup:high", "AGENT_ROLE_SECOND_REVIEWER": "claude:second:high"}, []string{"primary"}, "cross_reviewer", "warn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := modelFixtureProbe(now, t.TempDir())
+			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
+				state := modelhealth.OK
+				if slices.Contains(tc.unavailable, ref.Model) {
+					state = modelhealth.Unavailable
+				}
+				return modelhealth.Status{Ref: ref, State: state, Reason: "test", CheckedAt: now, Until: now.Add(time.Hour)}
+			}
+			env := map[string]string{"AGENT_TIER_DEFAULT": "codex:healthy:high", "AGENT_ROLE_REVIEWER": "codex:healthy:high", "AGENT_ROLE_INTAKE": "claude:healthy:high"}
+			maps.Copy(env, tc.env)
+			got := p.checkModels(context.Background(), []projects.Project{{Name: "one", Repository: config.Repository{Env: env}}}, nil)
+			if got.Status != tc.want {
+				t.Fatalf("check = %+v", got)
+			}
+			rows := 0
+			for _, row := range got.Details.([]doctorModelStatus) {
+				if row.Role == tc.role {
+					rows++
+				}
+			}
+			if rows != 2 {
+				t.Fatalf("%s rows = %d: %+v", tc.role, rows, got.Details)
+			}
+		})
+	}
+}
+
 func TestDoctorModelsProbesDuringCooldown(t *testing.T) {
 	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
 	root := t.TempDir()

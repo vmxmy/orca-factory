@@ -399,7 +399,7 @@ flowchart LR
   | `sync_prs` | 每个项目 `gh pr list` 中未合并的 core 同步 PR、创建时间、版本落后 factory `origin/main` 的提交数 | 存活超过 24 小时：fail；否则 warn |
   | `ledger` | 在途票（In Progress）的评论数、空正文数、最长正文与 9 万字上限的距离 | 距离不足上限 10%：fail；有空正文（历史遗留）：warn |
   | `launches` | 状态根目录下近 30 分钟有写入的 `launch-*.log` 中的 start 与非零 exit 记录；`err` 含 `maintenance refused`、`deferred`、`recovery evidence changed` 的延后类退出不算失败 | 同票失败 3 次以上：fail；启动 3 次以上或有失败：warn |
-  | `models` | 各仓库角色使用的模型端点，以及 worker 在 correction 上限内可达的档位 | 档位或代理配置无效、缺默认 worker、主 reviewer 或 intake，或某角色全部候选冷却，均为 `fail`。各角色仍可重试但有候选冷却时为 `warn`。其余未确认的状态（含 `unsupported_agent`）为 `unknown`。 |
+  | `models` | 各仓库角色使用的模型端点，以及 worker 在 correction 上限内可达的档位 | 档位或代理配置无效、缺默认 worker、主 reviewer 或 intake，或某角色全部候选冷却，均为 `fail`。各角色的 `_FALLBACK` 兜底候选也探测并计入可重试判定，主选冷却但兜底可用为 `warn`。各角色仍可重试但有候选冷却时为 `warn`。其余未确认的状态（含 `unsupported_agent`）为 `unknown`。 |
   | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 的结果；gh 报 token invalid 时对 `api.github.com` 的无认证请求 | 缺变量：fail；gh 报 token invalid 且 GitHub 可达（任何 HTTP 响应，含 403 限流）：fail，原因为凭证不可读（keyring 可能未解锁）；gh 其他失败或 GitHub 不可达：unknown |
 
   `--json` 的形状与 `bin/orca-factory doctor --json` 一致：顶层 `checks` 按检查项名字给出 `{status, reason, details}`，`errors` 是字符串数组，列出无法执行的探针。`status` 取值为 `ok`、`warn`、`unknown`、`fail`，消费方遇到未知取值时应按 `unknown` 处理。飞书接口能否认证由 `ledger` 实际读账本证明。输出包含仓库、角色、模型引用、固定原因码，以及变量名、布尔值、计数、时间和命令退出码，不含凭证值和外部命令的原始输出。driver watch（OF-128）读取这个结构，字段只增不改。
@@ -706,7 +706,7 @@ AGENT_TIER_ESCALATE = "0"
 
 ## 模型可用性（OF-592）
 
-`orca-factory-driver doctor --json` 的 `checks.models.details` 按仓库和角色列出模型引用、状态、原因、冷却截止时间和检查时间。文本报告也逐行显示结果。缺少默认 worker、主 reviewer 或 intake 时，对应行显示 `unknown/not_configured`。角色档位配置无效时，该行显示 `unknown/config_invalid`，其他角色和仓库继续检查。pipeline 检查或仓库配置加载失败而未被接管的仓库（账本项目表可读时仅限按最后一行启用的仓库），以远端列一行 `profile`，显示 `unknown/config_invalid`。这些情况都使整项为 `fail`。
+`orca-factory-driver doctor --json` 的 `checks.models.details` 按仓库和角色列出模型引用、状态、原因、冷却截止时间和检查时间。文本报告也逐行显示结果。工作各档、`reviewer`、`reviewer_small`、`second_reviewer`、`resolver`、`resolver_top`、`intake` 配置了 `<键名>_FALLBACK` 时，每个兜底候选另列一行同名角色，沿用主选的端点与中转判定，与主选同属一个可重试分组；主选冷却但兜底可用为 `warn`。`cross_reviewer` 与调度器交叉审查一致，沿用 `AGENT_ROLE_REVIEWER_FALLBACK`。兜底解析失败时该角色另列一行 `unknown/config_invalid`。旧式 `*_CMD` 命令没有兜底。缺少默认 worker、主 reviewer 或 intake 时，对应行显示 `unknown/not_configured`。角色档位配置无效时，该行显示 `unknown/config_invalid`，其他角色和仓库继续检查。pipeline 检查或仓库配置加载失败而未被接管的仓库（账本项目表可读时仅限按最后一行启用的仓库），以远端列一行 `profile`，显示 `unknown/config_invalid`。这些情况都使整项为 `fail`。
 
 worker 首轮使用 `default`。无论是否升档，`AGENT_TIER_CHAIN` 都须合法，空值使用 `default strong`。启用 `AGENT_TIER_ESCALATE=1` 时，链必须含 `default`，每个档位都须配置合法的模型引用。候选包括 `default` 和最多 3 次 correction 能到达的后续档位。窗口外格式错误的档位单独报错，合法的档位省略。关闭升档时只有 `default` 是候选。
 
