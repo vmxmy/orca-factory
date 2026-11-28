@@ -16,6 +16,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -139,7 +140,9 @@ func runRelease(args []string, out io.Writer, deps releaseDeps) int {
 	if err != nil {
 		return fail("comment", err)
 	}
-	comment := merge.ProgressPrefix + string(body) + fmt.Sprintf("\nPR: #%d\n合并提交: %s\n部署版本: %s\nSmoke: doctor --json passed（无 fail 或 unknown）", *pr, *sha, deployed)
+	// Releasing ownership like the merge lane's own receipt (merge.go) frees a
+	// manually merged ticket that discovery queued without a durable handoff.
+	comment := merge.ProgressPrefix + string(body) + fmt.Sprintf("\n阶段: %s\n归属: %s\nPR: #%d\n合并提交: %s\n部署版本: %s\nSmoke: doctor --json passed（无 fail 或 unknown）", machine.PhaseMerged, machine.OwnerNone, *pr, *sha, deployed)
 	if err = deps.comment(ctx, progress.TicketID, comment); err != nil {
 		return fail("comment", err)
 	}
