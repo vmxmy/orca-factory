@@ -48,6 +48,7 @@ func TestRunnerTurnConfinesAgentToSandbox(t *testing.T) {
 		}
 		t.Fatalf("bwrap unavailable: %v", err)
 	}
+	t.Run("antigravity", antigravityTurnConfinesAgentToSandbox)
 	// Outside /tmp, which the sandbox empties whatever else it exposes.
 	cache, err := os.UserCacheDir()
 	if err != nil {
@@ -175,14 +176,9 @@ func TestAntigravityIntakeTurn(t *testing.T) {
 
 // A stand-in agy inside the real sandbox reports what it reaches: agy's own
 // directory is a private one under StateRoot holding only the sign-in token,
-// so the conversations of every other agy session stay hidden.
-func TestAntigravityTurnConfinesAgentToSandbox(t *testing.T) {
-	if err := exec.Command("bwrap", "--ro-bind", "/", "/", "--unshare-pid", "true").Run(); err != nil {
-		if os.Getenv("CI") != "" {
-			t.Skipf("bwrap unavailable: %v", err)
-		}
-		t.Fatalf("bwrap unavailable: %v", err)
-	}
+// so the conversations of every other agy session stay hidden. It runs under
+// TestRunnerTurnConfinesAgentToSandbox, which first requires a working bwrap.
+func antigravityTurnConfinesAgentToSandbox(t *testing.T) {
 	cache, err := os.UserCacheDir()
 	if err != nil {
 		t.Fatal(err)
