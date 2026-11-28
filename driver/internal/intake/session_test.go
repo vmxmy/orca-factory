@@ -381,3 +381,33 @@ func TestModelRelayIntake(t *testing.T) {
 		})
 	}
 }
+
+// A session stays on the agent it started on: once antigravity holds the
+// conversation, its cooldown fails the turn instead of moving it to claude,
+// which never saw that conversation.
+func TestIntakeSessionKeepsAgent(t *testing.T) {
+	runner, logs, claudeRan := antigravityRunner(t)
+	const session = "44444444-4444-4444-8444-444444444444"
+	if _, err := runner.Turn(context.Background(), Turn{Session: session, Prompt: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	calls(t, logs)
+	registry, err := modelhealth.Open(runner.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	agy := modelhealth.Ref{Agent: "antigravity", Model: runner.Model, Effort: runner.Effort}
+	if err := registry.Record(modelhealth.Status{Ref: agy, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := runner.Turn(context.Background(), Turn{Session: session, Resume: true, Prompt: "again"}); err == nil {
+		t.Fatalf("turn moved off its agent and returned %q", got)
+	}
+	if _, err := os.Stat(claudeRan); err == nil {
+		t.Fatal("claude started for an antigravity session")
+	}
+	if got := calls(t, logs); len(got) != 0 {
+		t.Fatalf("unavailable agy started %d times", len(got))
+	}
+}
