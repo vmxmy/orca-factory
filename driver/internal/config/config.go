@@ -69,6 +69,10 @@ func Load(home string) (Config, error) {
 	}
 	if err == nil {
 		if _, err = toml.Decode(string(data), &raw); err != nil {
+			var parsed toml.ParseError
+			if errors.As(err, &parsed) && strings.HasPrefix(parsed.LastKey, "agents.") && strings.HasSuffix(parsed.LastKey, ".probe_timeout") {
+				return Config{}, fmt.Errorf("invalid machine configuration: [%s]: %s", strings.TrimSuffix(parsed.LastKey, ".probe_timeout"), parsed.Message)
+			}
 			return Config{}, errors.New("invalid machine configuration")
 		}
 	}
