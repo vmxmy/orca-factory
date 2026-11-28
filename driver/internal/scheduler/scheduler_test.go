@@ -197,8 +197,9 @@ func TestLegacyTakeover(t *testing.T) {
 		legacy        Legacy
 		kind          ActionKind
 		launch, merge int
+		phase         machine.Phase
 	}{
-		{"complete branch", Legacy{Complete: true}, Resume, 1, 0}, {"release", Legacy{}, Release, 0, 0},
+		{"PR", Legacy{HasPR: true}, Resolve, 1, 0, machine.PhaseResolver}, {"complete branch", Legacy{Complete: true}, Resume, 1, 0, machine.PhaseGate}, {"release", Legacy{}, Release, 0, 0, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeBackend{legacy: map[string]Legacy{"ticket": tc.legacy}}
@@ -210,23 +211,24 @@ func TestLegacyTakeover(t *testing.T) {
 			if len(f.actions) != 1 || f.actions[0].Kind != tc.kind || len(f.launched) != tc.launch || len(s.MergeQueue) != tc.merge {
 				t.Fatalf("actions=%v launch=%v merge=%v", f.actions, f.launched, s.MergeQueue)
 			}
-			if tc.launch == 1 && f.launched[0].Phase != machine.PhaseGate {
-				t.Fatal("legacy branch did not request gate resume")
+			if tc.launch == 1 && f.launched[0].Phase != tc.phase {
+				t.Fatalf("legacy launch phase=%s, want %s", f.launched[0].Phase, tc.phase)
 			}
 		})
 	}
 }
 func TestLegacyTicketWithPRWithoutHandoffGoesToResolver(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		legacy  Legacy
-		handoff *merge.Handoff
-		kind    ActionKind
-		phase   machine.Phase
+		name          string
+		legacy        Legacy
+		handoff       *merge.Handoff
+		kind          ActionKind
+		phase         machine.Phase
+		launch, merge int
 	}{
-		{"PR without handoff", Legacy{HasPR: true}, nil, Resolve, machine.PhaseResolver},
-		{"PR with handoff", Legacy{HasPR: true}, &merge.Handoff{PR: 7}, Merge, machine.PhaseMergeQueue},
-		{"complete branch", Legacy{Complete: true}, nil, Resume, machine.PhaseGate},
+		{"PR without handoff", Legacy{HasPR: true}, nil, Resolve, machine.PhaseResolver, 1, 0},
+		{"PR with handoff", Legacy{HasPR: true}, &merge.Handoff{PR: 7}, Merge, machine.PhaseMergeQueue, 0, 1},
+		{"complete branch", Legacy{Complete: true}, nil, Resume, machine.PhaseGate, 1, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeBackend{legacy: map[string]Legacy{"ticket": tc.legacy}}
@@ -235,8 +237,11 @@ func TestLegacyTicketWithPRWithoutHandoffGoesToResolver(t *testing.T) {
 			if err := s.Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if len(f.actions) != 1 || f.actions[0].Kind != tc.kind || f.actions[0].Phase != tc.phase {
-				t.Fatalf("actions=%v", f.actions)
+			if len(f.actions) != 1 || f.actions[0].Kind != tc.kind || f.actions[0].Phase != tc.phase || len(f.launched) != tc.launch || len(s.MergeQueue) != tc.merge {
+				t.Fatalf("actions=%v launch=%v merge=%v", f.actions, f.launched, s.MergeQueue)
+			}
+			if tc.launch == 1 && f.launched[0].Phase != tc.phase {
+				t.Fatalf("launched phase=%s, want %s", f.launched[0].Phase, tc.phase)
 			}
 			if tc.kind == Resolve && f.actions[0].Reason != "legacy PR without frozen handoff" {
 				t.Fatalf("reason=%q", f.actions[0].Reason)
