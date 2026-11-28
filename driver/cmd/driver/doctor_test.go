@@ -702,6 +702,7 @@ func TestDoctorModelsCountsFallbackCandidates(t *testing.T) {
 		{"reviewer fallback available", map[string]string{"AGENT_ROLE_REVIEWER": "codex:primary:high", "AGENT_ROLE_REVIEWER_FALLBACK": "claude:backup:high"}, []string{"primary"}, "reviewer", "warn"},
 		{"reviewer fallback unavailable", map[string]string{"AGENT_ROLE_REVIEWER": "codex:primary:high", "AGENT_ROLE_REVIEWER_FALLBACK": "claude:backup:high"}, []string{"primary", "backup"}, "reviewer", "fail"},
 		{"worker fallback available", map[string]string{"AGENT_TIER_DEFAULT": "codex:primary:high", "AGENT_TIER_DEFAULT_FALLBACK": "claude:backup:high"}, []string{"primary"}, "worker_default", "warn"},
+		{"cross reviewer fallback available", map[string]string{"AGENT_ROLE_REVIEWER": "codex:primary:high", "AGENT_ROLE_REVIEWER_FALLBACK": "claude:backup:high", "AGENT_ROLE_SECOND_REVIEWER": "claude:second:high"}, []string{"primary"}, "cross_reviewer", "warn"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := modelFixtureProbe(now, t.TempDir())
