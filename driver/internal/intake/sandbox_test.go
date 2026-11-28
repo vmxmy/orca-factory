@@ -2,6 +2,7 @@ package intake
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -133,8 +134,8 @@ func antigravityRunner(t *testing.T) (runner *Runner, logs, claudeRan string) {
 	claude := filepath.Join(root, "claude")
 	writeFile(t, claude, "#!/bin/sh\ntouch "+claudeRan+"\nprintf '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"claude\"}'\n", 0o755)
 	agentcli.Configure(map[string]agentcli.Profile{"antigravity": {Binary: agy,
-		IntakeArgs:       []string{"--print={prompt}", "--model", "{model}", "--effort", "{effort}"},
-		IntakeResumeArgs: []string{"--print={prompt}", "--conversation", "{conversation}", "--model", "{model}", "--effort", "{effort}"}}})
+		IntakeArgs:       []string{"--print={prompt}", "--model", "{model}", "--effort", "{effort}", "--output-format", "json", "--mode", "plan"},
+		IntakeResumeArgs: []string{"--print={prompt}", "--conversation", "{conversation}", "--model", "{model}", "--effort", "{effort}", "--output-format", "json", "--mode", "plan"}}})
 	t.Cleanup(func() { agentcli.Configure(nil) })
 	runner = &Runner{Agent: "antigravity", Claude: claude, Bwrap: standInBwrap(t), Repo: repo, Checkout: filepath.Join(root, "checkout"),
 		Model: "gemini-4-neon-high", Effort: "high", Fallback: []modelhealth.Ref{{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}},
@@ -169,5 +170,72 @@ func TestAntigravityIntakeTurn(t *testing.T) {
 	}
 	if _, err := os.Stat(claudeRan); err == nil {
 		t.Fatal("claude started for an antigravity session")
+	}
+}
+
+// A stand-in agy inside the real sandbox reports what it reaches: agy's own
+// directory is a private one under StateRoot holding only the sign-in token,
+// so the conversations of every other agy session stay hidden.
+func TestAntigravityTurnConfinesAgentToSandbox(t *testing.T) {
+	if err := exec.Command("bwrap", "--ro-bind", "/", "/", "--unshare-pid", "true").Run(); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Skipf("bwrap unavailable: %v", err)
+		}
+		t.Fatalf("bwrap unavailable: %v", err)
+	}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", cache)
+	home, outside := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	checkout := filepath.Join(home, ".cache", "intake", "checkout")
+	writeFile(t, filepath.Join(checkout, "scripts/agent-gates/roles/intake-chat.md"), "role", 0o600)
+	agyDir := filepath.Join(home, ".gemini", "antigravity-cli")
+	writeFile(t, filepath.Join(agyDir, "antigravity-oauth-token"), "token", 0o600)
+	hidden := []string{
+		filepath.Join(agyDir, "brain", "other", "plan.md"), filepath.Join(agyDir, "conversations", "other.db"),
+		filepath.Join(agyDir, "history.jsonl"), filepath.Join(agyDir, "settings.json"),
+		filepath.Join(home, ".gemini", "settings.json"), filepath.Join(home, ".claude", ".credentials.json"),
+		filepath.Join(home, ".codex", "auth.json"),
+	}
+	for _, secret := range hidden {
+		writeFile(t, secret, "x", 0o600)
+	}
+	recorded, err := os.ReadFile("../../testdata/recorded/agy-print-json-result.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nseen=\"\"\nfor f in"
+	for _, secret := range hidden {
+		script += fmt.Sprintf(" %q", secret)
+	}
+	script += fmt.Sprintf(` /proc/%d/environ; do [ -e "$f" ] && seen="$seen $f"; done
+[ -r %q ] || seen="$seen no-token"
+touch %q 2> /dev/null || seen="$seen no-state-write"
+[ -z "$seen" ] || { printf 'seen:%%s' "$seen" >&2; exit 1; }
+printf '%%s' %q
+`, os.Getpid(), filepath.Join(agyDir, "antigravity-oauth-token"), filepath.Join(agyDir, "marker"), string(recorded))
+	agy := filepath.Join(outside, "agy")
+	writeFile(t, agy, script, 0o755)
+	agentcli.Configure(map[string]agentcli.Profile{"antigravity": {Binary: agy,
+		IntakeArgs: []string{"--print={prompt}"}, IntakeResumeArgs: []string{"--print={prompt}", "--conversation", "{conversation}"}}})
+	t.Cleanup(func() { agentcli.Configure(nil) })
+	state := filepath.Join(outside, "state")
+	runner := &Runner{Agent: "antigravity", Repo: outside, Checkout: checkout, StateRoot: state, Timeout: 30 * time.Second}
+	if _, err := runner.antigravity(context.Background(), Turn{Session: "s", Prompt: "p"}, modelhealth.Ref{Agent: "antigravity"}, ""); err != nil {
+		var exit *exec.ExitError
+		errors.As(err, &exit)
+		t.Fatalf("agy reached hidden paths or lost its state: %v: %s", err, exit.Stderr)
+	}
+	if _, err := os.Stat(filepath.Join(state, "intake-antigravity", "marker")); err != nil {
+		t.Fatalf("agy state not kept under StateRoot: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(agyDir, "marker")); err == nil {
+		t.Fatal("agy wrote into the shared antigravity-cli directory")
 	}
 }

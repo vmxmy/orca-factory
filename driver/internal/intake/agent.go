@@ -223,7 +223,9 @@ func (r *Runner) claude(ctx context.Context, flag string, t Turn, model modelhea
 		"--tools", "Read,Grep,Glob,Skill", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--settings", agentSettings)
 	// The prompt travels on stdin: --tools is variadic, and an untrusted message
 	// starting with "-" must never be parsed as a flag.
-	sandbox, err := r.sandboxArgs(r.Claude, ".claude", ".claude.json")
+	home := os.Getenv("HOME")
+	config, state := filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json")
+	sandbox, err := r.sandboxArgs(r.Claude, config, config, state, state)
 	if err != nil {
 		return nil, err
 	}
@@ -252,9 +254,10 @@ func (r *Runner) sandboxed(ctx context.Context, args, env []string, stdin string
 // machine holding production credentials. A missing bwrap fails the turn
 // instead of running unconfined. Only system directories are exposed, so a
 // repository is hidden wherever it lives. Home holds nothing but the agent's
-// own state paths, because a token refresh must be able to replace its
-// credentials file. /etc/resolv.conf may link into the otherwise absent /run.
-func (r *Runner) sandboxArgs(binary string, state ...string) ([]string, error) {
+// own state, binds given as source and target pairs, because a token refresh
+// must be able to replace its credentials file. /etc/resolv.conf may link into
+// the otherwise absent /run.
+func (r *Runner) sandboxArgs(binary string, binds ...string) ([]string, error) {
 	home := os.Getenv("HOME")
 	if home == "" {
 		return nil, errors.New("intake sandbox requires HOME")
@@ -271,9 +274,8 @@ func (r *Runner) sandboxArgs(binary string, state ...string) ([]string, error) {
 		args = append(args, "--ro-bind-try", resolver, resolver)
 	}
 	args = append(args, "--tmpfs", home)
-	for _, path := range state {
-		path = filepath.Join(home, path)
-		args = append(args, "--bind-try", path, path)
+	for i := 0; i+1 < len(binds); i += 2 {
+		args = append(args, "--bind-try", binds[i], binds[i+1])
 	}
 	return append(args, "--ro-bind", r.Checkout, r.Checkout, "--ro-bind", agent, agent, "--remount-ro", "/", "--chdir", r.Checkout, "--", agent), nil
 }

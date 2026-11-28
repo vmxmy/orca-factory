@@ -947,21 +947,25 @@ Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stde
 ```toml
 [agents.antigravity]
 binary = "agy"
-intake_args = ["--print={prompt}", "--model", "{model}", "--effort", "{effort}"]
-intake_resume_args = ["--print={prompt}", "--conversation", "{conversation}", "--model", "{model}", "--effort", "{effort}"]
+intake_args = ["--print={prompt}", "--model", "{model}", "--effort", "{effort}", "--output-format", "json", "--mode", "plan", "--settings", "{\"allowNonWorkspaceAccess\":false,\"permissions\":{\"deny\":[\"command(*)\",\"mcp(*)\",\"write_file(*)\"]}}"]
+intake_resume_args = ["--print={prompt}", "--conversation", "{conversation}", "--model", "{model}", "--effort", "{effort}", "--output-format", "json", "--mode", "plan", "--settings", "{\"allowNonWorkspaceAccess\":false,\"permissions\":{\"deny\":[\"command(*)\",\"mcp(*)\",\"write_file(*)\"]}}"]
 ```
 
 - `intake_args` 开始新会话，`intake_resume_args` 续接 `{conversation}` 指定的 agy 会话。
-  两项缺一时 antigravity 回合失败。消息经 `{prompt}` 传入，须用 `--print=` 连写形式，
-  以免以 `-` 开头的消息被当成参数。模型和 effort 为空时去掉对应参数。
+  两项缺一时 antigravity 回合失败。driver 不追加任何 agy 参数，模板须自带
+  `--output-format json`、`--mode plan` 与 `--settings` 拒绝规则。消息经 `{prompt}` 传入，
+  须用 `--print=` 连写形式，以免以 `-` 开头的消息被当成参数。模型和 effort 为空时去掉对应参数。
 - agy 没有系统提示参数：新会话的首条消息前附上检出中的 `scripts/agent-gates/roles/intake-chat.md`
   全文。提示词内容不变。
-- driver 在模板之后固定追加 `--output-format json --mode plan --settings <拒绝规则>`。
-  拒绝规则设 `allowNonWorkspaceAccess=false`，并拒绝 `read_file(~/.gemini)`、`read_file(/proc)`、
-  `write_file(*)`、`command(*)`、`mcp(*)`、`read_url(*)`、`execute_url(*)`。agy 在执行工具前强制检查
-  这些规则（实测拒读与拒绝命令均报 `Matches user-configured deny rule`）。
-- 沙箱与 Claude 回合相同，HOME 只放 agy 自己的 `~/.gemini/antigravity-cli`（登录令牌与会话），
-  不放 `~/.gemini` 的其他文件。环境只含 `HOME` 与 `PATH`。超时、取消与进程组处理与 Claude 回合共用。
+- 凭证保护由 agy 强制执行（agy 1.5.18 实测，2026-11-28）：`read_file` 读
+  `~/.gemini/antigravity-cli/antigravity-oauth-token` 报 `Matches hardcoded system protection boundary rule`；
+  上面的拒绝规则让 `wc -c`、`ls` 等命令报 `Matches user-configured deny rule`；`allowNonWorkspaceAccess=false`
+  下读工作区外的文件需要批准，`--print` 无法批准，按拒绝处理。工具被拒时 agy 的 `response` 常为空，该轮按失败处理。
+- 沙箱与 Claude 回合相同，只是 HOME 下的内容不同：`~/.gemini/antigravity-cli` 换成
+  `<state root>/intake-antigravity`（0700），其中只绑定真实目录里的 `antigravity-oauth-token`。
+  agy 的 `brain/`、`conversations/`、历史与设置因此只含需求助手自己的会话，其他 agy 会话、`~/.gemini` 其他文件、
+  `~/.claude` 与 `~/.codex` 都不在沙箱里。环境只含 `HOME` 与 `PATH`。
+  超时、取消与进程组处理与 Claude 回合共用。
 - 回复取 agy JSON 的 `response`（去掉首尾空白），`status` 须为 `SUCCESS`，`conversation_id` 须为 UUID；
   录制样本见 `testdata/recorded/agy-print-json-result.json`。
 

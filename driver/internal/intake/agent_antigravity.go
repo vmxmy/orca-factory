@@ -17,10 +17,10 @@ import (
 
 const antigravity = "antigravity"
 
-// antigravityState is agy's own directory under HOME: its sign-in token and
-// conversations. The sandbox exposes it for the process, and the deny rules
-// keep the agent's tools out of it.
-const antigravityState = ".gemini/antigravity-cli"
+// antigravityState is agy's own directory under HOME. The sandbox replaces it
+// with a private directory under StateRoot that holds intake conversations
+// only, and binds in nothing from the real one but the sign-in token.
+const antigravityState, antigravityToken = ".gemini/antigravity-cli", "antigravity-oauth-token"
 
 var conversationID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
@@ -75,19 +75,6 @@ func (r *Runner) recordSessionAgent(session string, s sessionAgent) error {
 	return writeJSON(path, s)
 }
 
-// antigravitySettings denies the agent every tool beyond reading the checkout.
-// agy matches these rules before running a tool, also in --mode plan.
-func antigravitySettings(home string) string {
-	b, _ := json.Marshal(map[string]any{
-		"allowNonWorkspaceAccess": false,
-		"permissions": map[string][]string{"deny": {
-			"read_file(" + filepath.Join(home, ".gemini") + ")", "read_file(/proc)",
-			"write_file(*)", "command(*)", "mcp(*)", "read_url(*)", "execute_url(*)",
-		}},
-	})
-	return string(b)
-}
-
 // antigravity runs one sandboxed agy --print turn. agy has no system prompt
 // flag, so a first turn carries the intake role ahead of the message.
 func (r *Runner) antigravity(ctx context.Context, t Turn, model modelhealth.Ref, conversation string) ([]byte, error) {
@@ -110,13 +97,18 @@ func (r *Runner) antigravity(ctx context.Context, t Turn, model modelhealth.Ref,
 	if err != nil {
 		return nil, fmt.Errorf("intake sandbox cannot find agy: %w", err)
 	}
+	private := filepath.Join(r.StateRoot, "intake-antigravity")
+	if err := os.MkdirAll(private, 0o700); err != nil {
+		return nil, fmt.Errorf("intake antigravity state unavailable: %w", err)
+	}
 	home := os.Getenv("HOME")
-	sandbox, err := r.sandboxArgs(binary, antigravityState)
+	state := filepath.Join(home, antigravityState)
+	token := filepath.Join(state, antigravityToken)
+	sandbox, err := r.sandboxArgs(binary, private, state, token, token)
 	if err != nil {
 		return nil, err
 	}
-	args := append(profile.IntakeArgv(model.Model, model.Effort, prompt, conversation),
-		"--output-format", "json", "--mode", "plan", "--settings", antigravitySettings(home))
+	args := profile.IntakeArgv(model.Model, model.Effort, prompt, conversation)
 	return r.sandboxed(ctx, append(sandbox, args...), []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}, "")
 }
 
